@@ -1,0 +1,274 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "CivicSense AI user profile with role assignment.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["citizen", "authority", "admin"] },
+        "departmentId": { "type": "string", "maxLength": 64 },
+        "wardId": { "type": "string", "maxLength": 64 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "active", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII document for user contact details.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "homeAddress": { "type": "string", "maxLength": 240 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted administrator membership registry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "grantedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "Department": {
+      "title": "Department",
+      "description": "Municipal department responsible for resolving civic complaints.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "code": { "type": "string", "minLength": 2, "maxLength": 24 },
+        "categories": { "type": "array" },
+        "leadOfficer": { "type": "string", "maxLength": 120 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "code", "categories", "active", "createdAt"]
+    },
+    "Ward": {
+      "title": "Ward",
+      "description": "Municipal ward spatial metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "zone": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "centerLat": { "type": "number" },
+        "centerLng": { "type": "number" },
+        "isDemoBoundary": { "type": "boolean" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "zone", "centerLat", "centerLng", "isDemoBoundary", "active", "createdAt"]
+    },
+    "Complaint": {
+      "title": "Complaint",
+      "description": "Civic grievance record with AI classification, GIS coordinates, and status workflow.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "citizenId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "citizenName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "title": { "type": "string", "minLength": 4, "maxLength": 160 },
+        "description": { "type": "string", "minLength": 10, "maxLength": 2000 },
+        "category": {
+          "type": "string",
+          "enum": [
+            "Garbage and Waste Management",
+            "Road Damage and Potholes",
+            "Water Supply and Leakage",
+            "Drainage and Sewage",
+            "Streetlight Problems",
+            "Sanitation",
+            "Public Infrastructure",
+            "Other Civic Issues"
+          ]
+        },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "status": {
+          "type": "string",
+          "enum": ["Submitted", "Under Review", "Assigned", "In Progress", "Resolved", "Rejected"]
+        },
+        "photoUrl": { "type": "string", "maxLength": 500 },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "address": { "type": "string", "minLength": 2, "maxLength": 280 },
+        "wardId": { "type": "string", "maxLength": 64 },
+        "assignedDepartmentId": { "type": "string", "maxLength": 64 },
+        "assignedAuthorityId": { "type": "string", "maxLength": 128 },
+        "assignedAuthorityName": { "type": "string", "maxLength": 120 },
+        "resolutionNotes": { "type": "string", "maxLength": 1000 },
+        "aiSource": { "type": "string", "maxLength": 80 },
+        "aiLabel": { "type": "string", "maxLength": 120 },
+        "aiExplanation": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "resolvedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "citizenId",
+        "citizenName",
+        "title",
+        "description",
+        "category",
+        "priority",
+        "status",
+        "latitude",
+        "longitude",
+        "address",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GisMarker": {
+      "title": "GisMarker",
+      "description": "Non-PII public spatial marker mirroring a civic complaint coordinate.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 4, "maxLength": 160 },
+        "category": { "type": "string", "maxLength": 80 },
+        "priority": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "status": {
+          "type": "string",
+          "enum": ["Submitted", "Under Review", "Assigned", "In Progress", "Resolved", "Rejected"]
+        },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "address": { "type": "string", "maxLength": 280 },
+        "wardId": { "type": "string", "maxLength": 64 },
+        "assignedDepartmentId": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "category", "priority", "status", "latitude", "longitude", "address", "createdAt", "updatedAt"]
+    },
+    "ComplaintUpdate": {
+      "title": "ComplaintUpdate",
+      "description": "Immutable status transition and remark entry under a complaint.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complaintId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "complaintCitizenId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "actorRole": { "type": "string", "enum": ["citizen", "authority", "admin"] },
+        "previousStatus": { "type": "string", "maxLength": 40 },
+        "newStatus": { "type": "string", "maxLength": 40 },
+        "remarks": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "complaintId", "complaintCitizenId", "actorId", "actorName", "actorRole", "newStatus", "remarks", "createdAt"]
+    },
+    "DuplicateMatch": {
+      "title": "DuplicateMatch",
+      "description": "Potential duplicate complaint pair flagged for authority/admin review.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sourceComplaintId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "matchedComplaintId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sourceTitle": { "type": "string", "maxLength": 160 },
+        "matchedTitle": { "type": "string", "maxLength": 160 },
+        "similarityReason": { "type": "string", "minLength": 4, "maxLength": 300 },
+        "distanceMeters": { "type": "number" },
+        "reviewStatus": { "type": "string", "enum": ["pending_review", "confirmed_duplicate", "dismissed"] },
+        "reviewedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "sourceComplaintId", "matchedComplaintId", "similarityReason", "reviewStatus", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notification addressed to a specific recipient user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "complaintId": { "type": "string", "maxLength": 64 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 140 },
+        "message": { "type": "string", "minLength": 2, "maxLength": 400 },
+        "type": { "type": "string", "maxLength": 40 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "recipientId", "title", "message", "read", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable administrative audit log entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorName": { "type": "string", "maxLength": 120 },
+        "actorRole": { "type": "string", "enum": ["admin", "authority"] },
+        "action": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "targetType": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "targetId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "actorId", "actorRole", "action", "targetType", "targetId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User role and non-PII civic profile metadata."
+    },
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Strictly owner/admin-isolated PII contact information."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Administrator registry for RBAC checks."
+    },
+    "/departments/{departmentId}": {
+      "schema": { "$ref": "#/entities/Department" },
+      "description": "Municipal departments directory."
+    },
+    "/wards/{wardId}": {
+      "schema": { "$ref": "#/entities/Ward" },
+      "description": "Municipal ward geographic metadata."
+    },
+    "/complaints/{complaintId}": {
+      "schema": { "$ref": "#/entities/Complaint" },
+      "description": "Submitted civic grievances."
+    },
+    "/gis_markers/{complaintId}": {
+      "schema": { "$ref": "#/entities/GisMarker" },
+      "description": "Public non-PII geographic coordinates for OpenStreetMap GIS display."
+    },
+    "/complaints/{complaintId}/updates/{updateId}": {
+      "schema": { "$ref": "#/entities/ComplaintUpdate" },
+      "description": "Complaint timeline updates and internal remarks."
+    },
+    "/duplicate_matches/{matchId}": {
+      "schema": { "$ref": "#/entities/DuplicateMatch" },
+      "description": "Flagged potential duplicate complaint pairs."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Recipient-scoped in-app notifications."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Administrative audit trail."
+    }
+  }
+}

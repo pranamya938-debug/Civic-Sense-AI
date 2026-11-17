@@ -1,0 +1,6 @@
+{
+  "name": "CivicSense AI",
+  "description": "Intelligent civic grievance management platform connecting citizens and municipal authorities with AI classification, priority prediction, duplicate detection, and GIS mapping.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

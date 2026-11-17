@@ -1,0 +1,503 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default deny all unmatched paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Primitives ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email_verified == true && request.auth.token.email == '4al24cd025@aiet.org.in') ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    function isAuthority() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'authority';
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'departmentId', 'wardId', 'active', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.role in ['citizen', 'authority', 'admin'] &&
+        (!data.keys().hasAny(['departmentId']) || (data.departmentId is string && data.departmentId.size() <= 64)) &&
+        (!data.keys().hasAny(['wardId']) || (data.wardId is string && data.wardId.size() <= 64)) &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phone', 'homeAddress', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 180 &&
+        (!data.keys().hasAny(['phone']) || (data.phone is string && data.phone.size() <= 32)) &&
+        (!data.keys().hasAny(['homeAddress']) || (data.homeAddress is string && data.homeAddress.size() <= 240)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 180 &&
+        data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 128 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidDepartment(data) {
+      return data.keys().hasAll(['id', 'name', 'code', 'categories', 'active', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'name', 'code', 'categories', 'leadOfficer', 'active', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 120 &&
+        data.code is string && data.code.size() >= 2 && data.code.size() <= 24 &&
+        data.categories is list && data.categories.size() >= 1 && data.categories.size() <= 20 &&
+        data.categories[0] is string &&
+        (!data.keys().hasAny(['leadOfficer']) || (data.leadOfficer is string && data.leadOfficer.size() <= 120)) &&
+        data.active is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidWard(data) {
+      return data.keys().hasAll(['id', 'name', 'zone', 'centerLat', 'centerLng', 'isDemoBoundary', 'active', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'name', 'zone', 'centerLat', 'centerLng', 'isDemoBoundary', 'active', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 120 &&
+        data.zone is string && data.zone.size() >= 1 && data.zone.size() <= 64 &&
+        data.centerLat is number && data.centerLat >= -90 && data.centerLat <= 90 &&
+        data.centerLng is number && data.centerLng >= -180 && data.centerLng <= 180 &&
+        data.isDemoBoundary is bool &&
+        data.active is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidComplaint(data) {
+      return data.keys().hasAll([
+        'id', 'citizenId', 'citizenName', 'title', 'description',
+        'category', 'priority', 'status', 'latitude', 'longitude',
+        'address', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'citizenId', 'citizenName', 'title', 'description',
+        'category', 'priority', 'status', 'photoUrl', 'latitude', 'longitude',
+        'address', 'wardId', 'assignedDepartmentId', 'assignedAuthorityId',
+        'assignedAuthorityName', 'resolutionNotes', 'aiSource', 'aiLabel',
+        'aiExplanation', 'createdAt', 'updatedAt', 'resolvedAt'
+      ]) &&
+      isValidId(data.id) &&
+      isValidId(data.citizenId) &&
+      data.citizenName is string && data.citizenName.size() >= 1 && data.citizenName.size() <= 120 &&
+      data.title is string && data.title.size() >= 4 && data.title.size() <= 160 &&
+      data.description is string && data.description.size() >= 10 && data.description.size() <= 2000 &&
+      data.category in [
+        'Garbage and Waste Management',
+        'Road Damage and Potholes',
+        'Water Supply and Leakage',
+        'Drainage and Sewage',
+        'Streetlight Problems',
+        'Sanitation',
+        'Public Infrastructure',
+        'Other Civic Issues'
+      ] &&
+      data.priority in ['Low', 'Medium', 'High', 'Critical'] &&
+      data.status in ['Submitted', 'Under Review', 'Assigned', 'In Progress', 'Resolved', 'Rejected'] &&
+      (!data.keys().hasAny(['photoUrl']) || (data.photoUrl is string && data.photoUrl.size() <= 500)) &&
+      data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+      data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+      data.address is string && data.address.size() >= 2 && data.address.size() <= 280 &&
+      (!data.keys().hasAny(['wardId']) || (data.wardId is string && data.wardId.size() <= 64)) &&
+      (!data.keys().hasAny(['assignedDepartmentId']) || (data.assignedDepartmentId is string && data.assignedDepartmentId.size() <= 64)) &&
+      (!data.keys().hasAny(['assignedAuthorityId']) || (data.assignedAuthorityId is string && data.assignedAuthorityId.size() <= 128)) &&
+      (!data.keys().hasAny(['assignedAuthorityName']) || (data.assignedAuthorityName is string && data.assignedAuthorityName.size() <= 120)) &&
+      (!data.keys().hasAny(['resolutionNotes']) || (data.resolutionNotes is string && data.resolutionNotes.size() <= 1000)) &&
+      (!data.keys().hasAny(['aiSource']) || (data.aiSource is string && data.aiSource.size() <= 80)) &&
+      (!data.keys().hasAny(['aiLabel']) || (data.aiLabel is string && data.aiLabel.size() <= 120)) &&
+      (!data.keys().hasAny(['aiExplanation']) || (data.aiExplanation is string && data.aiExplanation.size() <= 500)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp &&
+      (!data.keys().hasAny(['resolvedAt']) || data.resolvedAt is timestamp);
+    }
+
+    function isValidGisMarker(data) {
+      return data.keys().hasAll([
+        'id', 'title', 'category', 'priority', 'status',
+        'latitude', 'longitude', 'address', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'title', 'category', 'priority', 'status',
+        'latitude', 'longitude', 'address', 'wardId',
+        'assignedDepartmentId', 'createdAt', 'updatedAt'
+      ]) &&
+      isValidId(data.id) &&
+      data.title is string && data.title.size() >= 4 && data.title.size() <= 160 &&
+      data.category is string && data.category.size() >= 2 && data.category.size() <= 80 &&
+      data.priority in ['Low', 'Medium', 'High', 'Critical'] &&
+      data.status in ['Submitted', 'Under Review', 'Assigned', 'In Progress', 'Resolved', 'Rejected'] &&
+      data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+      data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+      data.address is string && data.address.size() >= 2 && data.address.size() <= 280 &&
+      (!data.keys().hasAny(['wardId']) || (data.wardId is string && data.wardId.size() <= 64)) &&
+      (!data.keys().hasAny(['assignedDepartmentId']) || (data.assignedDepartmentId is string && data.assignedDepartmentId.size() <= 64)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidComplaintUpdate(data) {
+      return data.keys().hasAll([
+        'id', 'complaintId', 'complaintCitizenId', 'actorId',
+        'actorName', 'actorRole', 'newStatus', 'remarks', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'complaintId', 'complaintCitizenId', 'actorId',
+        'actorName', 'actorRole', 'previousStatus', 'newStatus', 'remarks', 'createdAt'
+      ]) &&
+      isValidId(data.id) &&
+      isValidId(data.complaintId) &&
+      isValidId(data.complaintCitizenId) &&
+      isValidId(data.actorId) &&
+      data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120 &&
+      data.actorRole in ['citizen', 'authority', 'admin'] &&
+      (!data.keys().hasAny(['previousStatus']) || (data.previousStatus is string && data.previousStatus.size() <= 40)) &&
+      data.newStatus in ['Submitted', 'Under Review', 'Assigned', 'In Progress', 'Resolved', 'Rejected'] &&
+      data.remarks is string && data.remarks.size() >= 1 && data.remarks.size() <= 1000 &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidDuplicateMatch(data) {
+      return data.keys().hasAll(['id', 'sourceComplaintId', 'matchedComplaintId', 'similarityReason', 'reviewStatus', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'sourceComplaintId', 'matchedComplaintId', 'sourceTitle', 'matchedTitle', 'similarityReason', 'distanceMeters', 'reviewStatus', 'reviewedBy', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.sourceComplaintId) &&
+        isValidId(data.matchedComplaintId) &&
+        (!data.keys().hasAny(['sourceTitle']) || (data.sourceTitle is string && data.sourceTitle.size() <= 160)) &&
+        (!data.keys().hasAny(['matchedTitle']) || (data.matchedTitle is string && data.matchedTitle.size() <= 160)) &&
+        data.similarityReason is string && data.similarityReason.size() >= 4 && data.similarityReason.size() <= 300 &&
+        (!data.keys().hasAny(['distanceMeters']) || data.distanceMeters is number) &&
+        data.reviewStatus in ['pending_review', 'confirmed_duplicate', 'dismissed'] &&
+        (!data.keys().hasAny(['reviewedBy']) || (data.reviewedBy is string && data.reviewedBy.size() <= 128)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'recipientId', 'title', 'message', 'read', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'recipientId', 'complaintId', 'title', 'message', 'type', 'read', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.recipientId) &&
+        (!data.keys().hasAny(['complaintId']) || (data.complaintId is string && data.complaintId.size() <= 64)) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 140 &&
+        data.message is string && data.message.size() >= 2 && data.message.size() <= 400 &&
+        (!data.keys().hasAny(['type']) || (data.type is string && data.type.size() <= 40)) &&
+        data.read is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['id', 'actorId', 'actorRole', 'action', 'targetType', 'targetId', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'actorId', 'actorName', 'actorRole', 'action', 'targetType', 'targetId', 'details', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.actorId) &&
+        (!data.keys().hasAny(['actorName']) || (data.actorName is string && data.actorName.size() <= 120)) &&
+        data.actorRole in ['admin', 'authority'] &&
+        data.action is string && data.action.size() >= 2 && data.action.size() <= 120 &&
+        data.targetType is string && data.targetType.size() >= 2 && data.targetType.size() <= 64 &&
+        data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 &&
+        (!data.keys().hasAny(['details']) || (data.details is string && data.details.size() <= 500)) &&
+        data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // Users (Role Metadata — PII isolated in /private/info)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAuthority() || isAdmin());
+      allow list: if isAdmin() || isAuthority();
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidUser(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (isOwner(userId) && (
+            incoming().role == 'citizen' ||
+            (isVerifiedUser() && request.auth.token.email == '4al24cd025@aiet.org.in' && incoming().role == 'admin')
+          )) ||
+          isAdmin()
+        );
+      allow update: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().active == existing().active &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'wardId', 'updatedAt']))
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /private/info {
+        allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow list: if false;
+        allow create: if isSignedIn() &&
+          isValidId(userId) &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().uid == userId &&
+          incoming().updatedAt == request.time &&
+          (isOwner(userId) || isAdmin());
+        allow update: if isSignedIn() &&
+          isValidId(userId) &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().updatedAt == request.time &&
+          (isOwner(userId) || isAdmin()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'homeAddress', 'updatedAt']);
+        allow delete: if isValidId(userId) && isAdmin();
+      }
+    }
+
+    // Admin Registry
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create, update: if isValidId(userId) &&
+        isAdmin() &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time;
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Municipal Departments (non-PII reference catalog — authenticated access only)
+    match /departments/{departmentId} {
+      allow get: if isValidId(departmentId) && isSignedIn();
+      allow list: if isSignedIn() && (isAdmin() || resource.data.active == true);
+      allow create: if isValidId(departmentId) &&
+        isAdmin() &&
+        isValidDepartment(incoming()) &&
+        incoming().id == departmentId &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(departmentId) &&
+        isAdmin() &&
+        isValidDepartment(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(departmentId) && isAdmin();
+    }
+
+    // Municipal Wards (non-PII spatial reference catalog — authenticated access only)
+    match /wards/{wardId} {
+      allow get: if isValidId(wardId) && isSignedIn();
+      allow list: if isSignedIn() && (isAdmin() || resource.data.active == true);
+      allow create: if isValidId(wardId) &&
+        isAdmin() &&
+        isValidWard(incoming()) &&
+        incoming().id == wardId &&
+        incoming().createdAt == request.time;
+      allow update: if isValidId(wardId) &&
+        isAdmin() &&
+        isValidWard(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(wardId) && isAdmin();
+    }
+
+    // Civic Complaints
+    match /complaints/{complaintId} {
+      allow get: if isValidId(complaintId) && isSignedIn() && (
+        existing().citizenId == request.auth.uid ||
+        existing().assignedAuthorityId == request.auth.uid ||
+        isAuthority() ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        isAuthority() ||
+        isAdmin() ||
+        resource.data.citizenId == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+        isValidId(complaintId) &&
+        isValidComplaint(incoming()) &&
+        incoming().id == complaintId &&
+        incoming().citizenId == request.auth.uid &&
+        incoming().status == 'Submitted' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isSignedIn() &&
+        isValidId(complaintId) &&
+        isValidComplaint(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().citizenId == existing().citizenId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            !(existing().status in ['Resolved', 'Rejected']) && (
+              (existing().citizenId == request.auth.uid &&
+                existing().status == 'Submitted' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'address', 'photoUrl', 'updatedAt'])) ||
+              (isAuthority() &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'status', 'priority', 'assignedDepartmentId', 'assignedAuthorityId', 'assignedAuthorityName', 'resolutionNotes', 'resolvedAt', 'updatedAt'
+                ]))
+            )
+          )
+        );
+      allow delete: if isValidId(complaintId) && isAdmin();
+
+      // Master Gate Subcollection: Complaint Timeline Updates
+      match /updates/{updateId} {
+        allow get: if isValidId(complaintId) && isValidId(updateId) && isSignedIn() && (
+          get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid ||
+          isAuthority() ||
+          isAdmin()
+        );
+        allow list: if isSignedIn() && (
+          isAuthority() ||
+          isAdmin() ||
+          get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid
+        );
+        allow create: if isSignedIn() &&
+          isValidId(complaintId) &&
+          isValidId(updateId) &&
+          isValidComplaintUpdate(incoming()) &&
+          incoming().id == updateId &&
+          incoming().complaintId == complaintId &&
+          incoming().actorId == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          exists(/databases/$(database)/documents/complaints/$(complaintId)) && (
+            isAdmin() ||
+            isAuthority() ||
+            get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid
+          );
+        allow update, delete: if false;
+      }
+    }
+
+    // Authenticated Non-PII GIS Markers
+    match /gis_markers/{complaintId} {
+      allow get: if isValidId(complaintId) && isSignedIn();
+      allow list: if isSignedIn() && (
+        isAuthority() ||
+        isAdmin() ||
+        resource.data.status in ['Submitted', 'Under Review', 'Assigned', 'In Progress', 'Resolved', 'Rejected']
+      );
+      allow create: if isSignedIn() &&
+        isValidId(complaintId) &&
+        isValidGisMarker(incoming()) &&
+        incoming().id == complaintId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/complaints/$(complaintId));
+      allow update: if isSignedIn() &&
+        isValidId(complaintId) &&
+        isValidGisMarker(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (isAuthority() || isAdmin()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'priority', 'assignedDepartmentId', 'updatedAt']);
+      allow delete: if isValidId(complaintId) && isAdmin();
+    }
+
+    // Duplicate Matches
+    match /duplicate_matches/{matchId} {
+      allow get: if isValidId(matchId) && (isAuthority() || isAdmin());
+      allow list: if isAuthority() || isAdmin();
+      allow create: if isSignedIn() &&
+        isValidId(matchId) &&
+        isValidDuplicateMatch(incoming()) &&
+        incoming().id == matchId &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/complaints/$(incoming().sourceComplaintId)) &&
+        exists(/databases/$(database)/documents/complaints/$(incoming().matchedComplaintId));
+      allow update: if isValidId(matchId) &&
+        (isAuthority() || isAdmin()) &&
+        isValidDuplicateMatch(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['reviewStatus', 'reviewedBy']);
+      allow delete: if isValidId(matchId) && isAdmin();
+    }
+
+    // Notifications
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isSignedIn() && (
+        existing().recipientId == request.auth.uid || isAdmin()
+      );
+      allow list: if isSignedIn() && (isAdmin() || resource.data.recipientId == request.auth.uid);
+      allow create: if isSignedIn() &&
+        isValidId(notificationId) &&
+        isValidNotification(incoming()) &&
+        incoming().id == notificationId &&
+        incoming().createdAt == request.time &&
+        (incoming().recipientId == request.auth.uid || isAuthority() || isAdmin());
+      allow update: if isSignedIn() &&
+        isValidId(notificationId) &&
+        isValidNotification(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().recipientId == existing().recipientId &&
+        incoming().createdAt == existing().createdAt &&
+        (existing().recipientId == request.auth.uid || isAdmin()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if isValidId(notificationId) && (existing().recipientId == request.auth.uid || isAdmin());
+    }
+
+    // Audit Logs (Immutable)
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(logId) &&
+        (isAdmin() || isAuthority()) &&
+        isValidAuditLog(incoming()) &&
+        incoming().id == logId &&
+        incoming().actorId == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Health check connection doc
+    match /test/connection {
+      allow get: if true;
+      allow list, write: if false;
+    }
+  }
+}
