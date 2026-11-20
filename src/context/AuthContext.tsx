@@ -1,13 +1,15 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { UserProfile } from '../shared/types';
-import { setStoredToken } from '../services/apiClient';
+import { AuthorityApplication, UserProfile } from '../shared/types';
+import { apiRequest, setStoredToken } from '../services/apiClient';
 import {
   auth,
   ensureUserProfileInFirestore,
   isFirebaseAvailable,
   registerWithEmailFirebase,
+  reloadFirebaseUser,
   resetPasswordFirebase,
+  sendEmailVerificationFirebase,
   signInWithEmailFirebase,
   signInWithGoogleFirebase,
   signOutFirebase,
@@ -16,7 +18,11 @@ import {
 
 interface AuthContextValue {
   user: UserProfile | null;
+  authorityApplication: AuthorityApplication | null;
   loading: boolean;
+  hasDeveloperAccess: boolean;
+  authError: string | null;
+  clearAuthError: () => void;
   firebaseConnected: boolean;
   loginWithEmail: (email: string, password: string) => Promise<UserProfile>;
   registerCitizen: (input: {
@@ -26,6 +32,15 @@ interface AuthContextValue {
     wardId?: string;
     phone?: string;
   }) => Promise<UserProfile>;
+  registerAuthorityIdentityWithEmail: (input: {
+    email: string;
+    password: string;
+    displayName: string;
+    phone?: string;
+  }) => Promise<UserProfile>;
+  registerAuthorityIdentityWithGoogle: () => Promise<UserProfile>;
+  resendVerificationEmail: () => Promise<void>;
+  refreshEmailVerification: () => Promise<boolean>;
   sendPasswordReset: (email: string) => Promise<void>;
   loginWithGoogle: () => Promise<UserProfile>;
   logout: () => Promise<void>;
@@ -35,30 +50,71 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+async function fetchServerSessionState(idToken: string): Promise<{
+  developerConsole: boolean;
+  authorityApplication: AuthorityApplication | null;
+}> {
+  try {
+    const res = await apiRequest<{
+      authorityApplication?: AuthorityApplication | null;
+      capabilities?: { developerConsole?: boolean; sourceExport?: boolean };
+    }>('/api/auth/me', { tokenOverride: idToken });
+    return {
+      developerConsole: Boolean(res?.capabilities?.developerConsole),
+      authorityApplication: res?.authorityApplication || null,
+    };
+  } catch {
+    return { developerConsole: false, authorityApplication: null };
+  }
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [authorityApplication, setAuthorityApplication] = useState<AuthorityApplication | null>(null);
+  const [hasDeveloperAccess, setHasDeveloperAccess] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const explicitAuthFlowRef = useRef(false);
+
+  const clearAuthError = useCallback(() => setAuthError(null), []);
 
   const syncCurrentFirebaseUser = useCallback(async () => {
     if (!auth?.currentUser) {
       setStoredToken(null);
       setUser(null);
+      setAuthorityApplication(null);
+      setHasDeveloperAccess(false);
       setLoading(false);
       return;
     }
+    setLoading(true);
     try {
-      const idToken = await auth.currentUser.getIdToken();
+      const idToken = await auth.currentUser.getIdToken(true);
       setStoredToken(idToken);
-      const profile = await ensureUserProfileInFirestore(auth.currentUser);
-      if (!profile.active) {
+      const profile = await ensureUserProfileInFirestore(auth.currentUser, undefined, {
+        allowAutoProvision: false,
+      });
+      if (!profile.active && profile.accountStatus !== 'suspended') {
         await signOutFirebase();
         setStoredToken(null);
         setUser(null);
+        setAuthorityApplication(null);
+        setHasDeveloperAccess(false);
+        setAuthError('Your account has been deactivated by an administrator.');
       } else {
+        const sessionState = await fetchServerSessionState(idToken);
+        setAuthError(null);
         setUser(profile);
+        setAuthorityApplication(sessionState.authorityApplication);
+        setHasDeveloperAccess(sessionState.developerConsole);
       }
-    } catch {
+    } catch (err) {
+      await signOutFirebase().catch(() => undefined);
+      setStoredToken(null);
       setUser(null);
+      setAuthorityApplication(null);
+      setHasDeveloperAccess(false);
+      setAuthError(err instanceof Error ? err.message : 'Unable to verify account role.');
     } finally {
       setLoading(false);
     }
@@ -70,25 +126,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (explicitAuthFlowRef.current) {
+        return;
+      }
       if (!fbUser) {
         setStoredToken(null);
         setUser(null);
+        setAuthorityApplication(null);
+        setHasDeveloperAccess(false);
         setLoading(false);
         return;
       }
+      setLoading(true);
       try {
         const idToken = await fbUser.getIdToken();
         setStoredToken(idToken);
-        const profile = await ensureUserProfileInFirestore(fbUser);
-        if (!profile.active) {
+        const isGoogleProvider = fbUser.providerData.some((p) => p.providerId === 'google.com');
+        const profile = await ensureUserProfileInFirestore(fbUser, undefined, {
+          allowAutoProvision: isGoogleProvider,
+        });
+        if (!profile.active && profile.accountStatus !== 'suspended') {
           await signOutFirebase();
           setStoredToken(null);
           setUser(null);
+          setAuthorityApplication(null);
+          setHasDeveloperAccess(false);
+          setAuthError('Your account has been deactivated by an administrator.');
         } else {
+          const sessionState = await fetchServerSessionState(idToken);
+          setAuthError(null);
           setUser(profile);
+          setAuthorityApplication(sessionState.authorityApplication);
+          setHasDeveloperAccess(sessionState.developerConsole);
         }
-      } catch {
+      } catch (err) {
+        await signOutFirebase().catch(() => undefined);
+        setStoredToken(null);
         setUser(null);
+        setAuthorityApplication(null);
+        setHasDeveloperAccess(false);
+        setAuthError(err instanceof Error ? err.message : 'Unable to verify account role.');
       } finally {
         setLoading(false);
       }
@@ -97,17 +174,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const loginWithEmail = async (email: string, password: string) => {
-    const cred = await signInWithEmailFirebase(email, password);
-    const idToken = await cred.user.getIdToken();
-    setStoredToken(idToken);
-    const profile = await ensureUserProfileInFirestore(cred.user);
-    if (!profile.active) {
-      await signOutFirebase();
+    setAuthError(null);
+    explicitAuthFlowRef.current = true;
+    setLoading(true);
+    try {
+      const cred = await signInWithEmailFirebase(email, password);
+      const idToken = await cred.user.getIdToken(true);
+      setStoredToken(idToken);
+      const profile = await ensureUserProfileInFirestore(cred.user, undefined, {
+        allowAutoProvision: false,
+      });
+      if (!profile.active && profile.accountStatus !== 'suspended') {
+        await signOutFirebase();
+        setStoredToken(null);
+        throw new Error('Your account has been deactivated by an administrator.');
+      }
+      const sessionState = await fetchServerSessionState(idToken);
+      setUser(profile);
+      setAuthorityApplication(sessionState.authorityApplication);
+      setHasDeveloperAccess(sessionState.developerConsole);
+      return profile;
+    } catch (err) {
+      await signOutFirebase().catch(() => undefined);
       setStoredToken(null);
-      throw new Error('This account has been deactivated by an administrator.');
+      setUser(null);
+      setAuthorityApplication(null);
+      setHasDeveloperAccess(false);
+      const msg = err instanceof Error ? err.message : 'Sign-in failed.';
+      setAuthError(msg);
+      throw new Error(msg);
+    } finally {
+      explicitAuthFlowRef.current = false;
+      setLoading(false);
     }
-    setUser(profile);
-    return profile;
   };
 
   const registerCitizen = async (input: {
@@ -117,16 +216,135 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     wardId?: string;
     phone?: string;
   }) => {
-    const cred = await registerWithEmailFirebase(input.email, input.password, input.displayName);
-    const idToken = await cred.user.getIdToken();
-    setStoredToken(idToken);
-    const profile = await ensureUserProfileInFirestore(cred.user, {
-      displayName: input.displayName,
-      wardId: input.wardId,
-      phone: input.phone,
-    });
-    setUser(profile);
-    return profile;
+    setAuthError(null);
+    explicitAuthFlowRef.current = true;
+    setLoading(true);
+    try {
+      const cred = await registerWithEmailFirebase(input.email, input.password, input.displayName);
+      const idToken = await cred.user.getIdToken();
+      setStoredToken(idToken);
+      const profile = await ensureUserProfileInFirestore(
+        cred.user,
+        {
+          displayName: input.displayName,
+          wardId: input.wardId,
+          phone: input.phone,
+          accountStatus: 'active',
+        },
+        { allowAutoProvision: true }
+      );
+      const sessionState = await fetchServerSessionState(idToken);
+      setUser(profile);
+      setAuthorityApplication(sessionState.authorityApplication);
+      setHasDeveloperAccess(sessionState.developerConsole);
+      return profile;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Registration failed.';
+      setAuthError(msg);
+      throw new Error(msg);
+    } finally {
+      explicitAuthFlowRef.current = false;
+      setLoading(false);
+    }
+  };
+
+  const registerAuthorityIdentityWithEmail = async (input: {
+    email: string;
+    password: string;
+    displayName: string;
+    phone?: string;
+  }) => {
+    setAuthError(null);
+    explicitAuthFlowRef.current = true;
+    setLoading(true);
+    try {
+      const cred = await registerWithEmailFirebase(input.email, input.password, input.displayName);
+      await sendEmailVerificationFirebase().catch(() => undefined);
+      const idToken = await cred.user.getIdToken();
+      setStoredToken(idToken);
+      const profile = await ensureUserProfileInFirestore(
+        cred.user,
+        {
+          displayName: input.displayName,
+          phone: input.phone,
+          accountStatus: 'pending_verification',
+        },
+        { allowAutoProvision: true }
+      );
+      const sessionState = await fetchServerSessionState(idToken);
+      setUser(profile);
+      setAuthorityApplication(sessionState.authorityApplication);
+      setHasDeveloperAccess(sessionState.developerConsole);
+      return profile;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Authority account creation failed.';
+      setAuthError(msg);
+      throw new Error(msg);
+    } finally {
+      explicitAuthFlowRef.current = false;
+      setLoading(false);
+    }
+  };
+
+  const registerAuthorityIdentityWithGoogle = async () => {
+    setAuthError(null);
+    explicitAuthFlowRef.current = true;
+    setLoading(true);
+    try {
+      const cred = await signInWithGoogleFirebase();
+      const idToken = await cred.user.getIdToken(true);
+      setStoredToken(idToken);
+      const profile = await ensureUserProfileInFirestore(
+        cred.user,
+        {
+          displayName: cred.user.displayName || undefined,
+        },
+        { allowAutoProvision: true }
+      );
+      if (!profile.active && profile.accountStatus !== 'suspended') {
+        await signOutFirebase();
+        setStoredToken(null);
+        throw new Error('Your account has been deactivated by an administrator.');
+      }
+      const sessionState = await fetchServerSessionState(idToken);
+      setUser(profile);
+      setAuthorityApplication(sessionState.authorityApplication);
+      setHasDeveloperAccess(sessionState.developerConsole);
+      return profile;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
+      setAuthError(msg);
+      throw new Error(msg);
+    } finally {
+      explicitAuthFlowRef.current = false;
+      setLoading(false);
+    }
+  };
+
+  const resendVerificationEmail = async () => {
+    await sendEmailVerificationFirebase();
+  };
+
+  const refreshEmailVerification = async () => {
+    const reloaded = await reloadFirebaseUser();
+    if (!reloaded) return false;
+    const freshToken = await reloaded.getIdToken(true);
+    setStoredToken(freshToken);
+    if (reloaded.emailVerified) {
+      try {
+        const res = await apiRequest<{ application?: AuthorityApplication | null }>(
+          '/api/authority-applications/sync-email-verification',
+          { method: 'POST', tokenOverride: freshToken }
+        );
+        if (res?.application) {
+          setAuthorityApplication(res.application);
+        }
+      } catch {
+        // ignore if no application doc yet
+      }
+    }
+    await syncCurrentFirebaseUser();
+    return Boolean(reloaded.emailVerified);
   };
 
   const sendPasswordReset = async (email: string) => {
@@ -134,28 +352,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginWithGoogle = async () => {
-    const cred = await signInWithGoogleFirebase();
-    const idToken = await cred.user.getIdToken();
-    setStoredToken(idToken);
-    const profile = await ensureUserProfileInFirestore(cred.user);
-    if (!profile.active) {
-      await signOutFirebase();
+    setAuthError(null);
+    explicitAuthFlowRef.current = true;
+    setLoading(true);
+    try {
+      const cred = await signInWithGoogleFirebase();
+      const idToken = await cred.user.getIdToken(true);
+      setStoredToken(idToken);
+      const profile = await ensureUserProfileInFirestore(cred.user, undefined, {
+        allowAutoProvision: true,
+      });
+      if (!profile.active && profile.accountStatus !== 'suspended') {
+        await signOutFirebase();
+        setStoredToken(null);
+        throw new Error('Your account has been deactivated by an administrator.');
+      }
+      const sessionState = await fetchServerSessionState(idToken);
+      setUser(profile);
+      setAuthorityApplication(sessionState.authorityApplication);
+      setHasDeveloperAccess(sessionState.developerConsole);
+      return profile;
+    } catch (err) {
+      await signOutFirebase().catch(() => undefined);
       setStoredToken(null);
-      throw new Error('This account has been deactivated by an administrator.');
+      setUser(null);
+      setAuthorityApplication(null);
+      setHasDeveloperAccess(false);
+      const msg = err instanceof Error ? err.message : 'Google Sign-In failed.';
+      setAuthError(msg);
+      throw new Error(msg);
+    } finally {
+      explicitAuthFlowRef.current = false;
+      setLoading(false);
     }
-    setUser(profile);
-    return profile;
   };
 
   const logout = async () => {
+    setAuthError(null);
     await signOutFirebase();
     setStoredToken(null);
     setUser(null);
+    setAuthorityApplication(null);
+    setHasDeveloperAccess(false);
   };
 
   const updateProfile = async (patch: { displayName?: string; wardId?: string; phone?: string }) => {
     if (!user) throw new Error('You must be signed in to update your profile.');
-    const updated = await updateUserProfileInFirestore(user.uid, user.email, patch);
+    const updated = await updateUserProfileInFirestore(user.uid, user.email, patch, user.role);
     setUser(updated);
     return updated;
   };
@@ -164,10 +407,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         user,
+        authorityApplication,
         loading,
+        hasDeveloperAccess,
+        authError,
+        clearAuthError,
         firebaseConnected: isFirebaseAvailable,
         loginWithEmail,
         registerCitizen,
+        registerAuthorityIdentityWithEmail,
+        registerAuthorityIdentityWithGoogle,
+        resendVerificationEmail,
+        refreshEmailVerification,
         sendPasswordReset,
         loginWithGoogle,
         logout,

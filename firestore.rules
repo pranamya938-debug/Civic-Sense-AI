@@ -33,33 +33,137 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isVerifiedBootstrapAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email == '4al24cd025@aiet.org.in';
+    }
+
+    function hasUserDoc() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isActiveUser() {
+      return isVerifiedBootstrapAdmin() || (hasUserDoc() && userDoc().active == true);
+    }
+
     function isAdmin() {
-      return isSignedIn() && (
-        (request.auth.token.email_verified == true && request.auth.token.email == '4al24cd025@aiet.org.in') ||
+      return isActiveUser() && (
+        isVerifiedBootstrapAdmin() ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        (hasUserDoc() && userDoc().role in ['admin', 'administrator'])
       );
     }
 
     function isAuthority() {
-      return isSignedIn() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'authority';
+      return isActiveUser() &&
+        hasUserDoc() &&
+        userDoc().role == 'authority' &&
+        userDoc().keys().hasAny(['accountStatus']) &&
+        userDoc().accountStatus == 'approved' &&
+        isVerifiedUser();
+    }
+
+    function isSystemUser() {
+      return isActiveUser() && hasUserDoc() && userDoc().role == 'system';
+    }
+
+    function authorityHasDept() {
+      return userDoc().keys().hasAny(['departmentId']) &&
+        userDoc().departmentId is string &&
+        userDoc().departmentId.size() > 0;
+    }
+
+    function authorityHasWard() {
+      return userDoc().keys().hasAny(['wardId']) &&
+        userDoc().wardId is string &&
+        userDoc().wardId.size() > 0;
+    }
+
+    function authorityDeptMatches(data) {
+      return !authorityHasDept() ||
+        (data.keys().hasAny(['assignedDepartmentId']) &&
+          data.assignedDepartmentId == userDoc().departmentId);
+    }
+
+    function authorityWardMatches(data) {
+      return !authorityHasWard() ||
+        (data.keys().hasAny(['wardId']) &&
+          data.wardId == userDoc().wardId);
+    }
+
+    function isAuthorityAuthorizedFor(data) {
+      return isAuthority() &&
+        (authorityHasDept() || authorityHasWard()) &&
+        authorityDeptMatches(data) &&
+        authorityWardMatches(data);
     }
 
     // --- Validation Blueprints ---
     function isValidUser(data) {
       return data.keys().hasAll(['uid', 'displayName', 'role', 'active', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['uid', 'displayName', 'role', 'departmentId', 'wardId', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'uid', 'displayName', 'role', 'accountStatus', 'departmentId', 'wardId',
+          'designation', 'municipality', 'employeeId', 'approvedBy', 'approvedAt',
+          'active', 'createdAt', 'updatedAt'
+        ]) &&
         isValidId(data.uid) &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
-        data.role in ['citizen', 'authority', 'admin'] &&
+        data.role in ['citizen', 'authority', 'admin', 'system'] &&
+        (!data.keys().hasAny(['accountStatus']) || data.accountStatus in ['active', 'pending_verification', 'approved', 'rejected', 'suspended']) &&
         (!data.keys().hasAny(['departmentId']) || (data.departmentId is string && data.departmentId.size() <= 64)) &&
         (!data.keys().hasAny(['wardId']) || (data.wardId is string && data.wardId.size() <= 64)) &&
+        (!data.keys().hasAny(['designation']) || (data.designation is string && data.designation.size() <= 120)) &&
+        (!data.keys().hasAny(['municipality']) || (data.municipality is string && data.municipality.size() <= 160)) &&
+        (!data.keys().hasAny(['employeeId']) || (data.employeeId is string && data.employeeId.size() <= 64)) &&
+        (!data.keys().hasAny(['approvedBy']) || (data.approvedBy is string && data.approvedBy.size() <= 128)) &&
+        (!data.keys().hasAny(['approvedAt']) || data.approvedAt is timestamp) &&
         data.active is bool &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidAuthorityApplication(data) {
+      return data.keys().hasAll([
+        'id', 'uid', 'fullName', 'officialEmail', 'contactNumber',
+        'employeeId', 'designation', 'municipality',
+        'departmentId', 'departmentName', 'wardId', 'wardName',
+        'emailVerified', 'status', 'submittedAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id', 'uid', 'fullName', 'officialEmail', 'contactNumber',
+        'employeeId', 'designation', 'municipality',
+        'departmentId', 'departmentName', 'wardId', 'wardName',
+        'verificationDocUrl', 'verificationDocName', 'emailVerified',
+        'status', 'submittedAt', 'updatedAt',
+        'reviewedBy', 'reviewedByName', 'reviewedAt', 'rejectionReason'
+      ]) &&
+      isValidId(data.id) &&
+      isValidId(data.uid) &&
+      data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+      data.officialEmail is string && data.officialEmail.size() >= 5 && data.officialEmail.size() <= 180 &&
+      data.contactNumber is string && data.contactNumber.size() >= 6 && data.contactNumber.size() <= 32 &&
+      data.employeeId is string && data.employeeId.size() >= 2 && data.employeeId.size() <= 64 &&
+      data.designation is string && data.designation.size() >= 2 && data.designation.size() <= 120 &&
+      data.municipality is string && data.municipality.size() >= 2 && data.municipality.size() <= 160 &&
+      isValidId(data.departmentId) &&
+      data.departmentName is string && data.departmentName.size() >= 2 && data.departmentName.size() <= 120 &&
+      isValidId(data.wardId) &&
+      data.wardName is string && data.wardName.size() >= 2 && data.wardName.size() <= 120 &&
+      (!data.keys().hasAny(['verificationDocUrl']) || (data.verificationDocUrl is string && data.verificationDocUrl.size() <= 500)) &&
+      (!data.keys().hasAny(['verificationDocName']) || (data.verificationDocName is string && data.verificationDocName.size() <= 160)) &&
+      data.emailVerified is bool &&
+      data.status in ['pending_verification', 'approved', 'rejected', 'suspended'] &&
+      data.submittedAt is timestamp &&
+      data.updatedAt is timestamp &&
+      (!data.keys().hasAny(['reviewedBy']) || (data.reviewedBy is string && data.reviewedBy.size() <= 128)) &&
+      (!data.keys().hasAny(['reviewedByName']) || (data.reviewedByName is string && data.reviewedByName.size() <= 120)) &&
+      (!data.keys().hasAny(['reviewedAt']) || data.reviewedAt is timestamp) &&
+      (!data.keys().hasAny(['rejectionReason']) || (data.rejectionReason is string && data.rejectionReason.size() <= 500));
     }
 
     function isValidUserPrivateInfo(data) {
@@ -118,7 +222,10 @@ service cloud.firestore {
         'category', 'priority', 'status', 'photoUrl', 'latitude', 'longitude',
         'address', 'wardId', 'assignedDepartmentId', 'assignedAuthorityId',
         'assignedAuthorityName', 'resolutionNotes', 'aiSource', 'aiLabel',
-        'aiExplanation', 'createdAt', 'updatedAt', 'resolvedAt'
+        'aiExplanation', 'aiDetectedCategory', 'aiDetectedProblem',
+        'aiImageDescription', 'aiImageSeverity', 'aiSuggestedDepartment',
+        'aiAnalyzedAt', 'aiImageQuality', 'aiVisibleEvidence',
+        'citizenConfirmedCategory', 'createdAt', 'updatedAt', 'resolvedAt'
       ]) &&
       isValidId(data.id) &&
       isValidId(data.citizenId) &&
@@ -149,6 +256,19 @@ service cloud.firestore {
       (!data.keys().hasAny(['aiSource']) || (data.aiSource is string && data.aiSource.size() <= 80)) &&
       (!data.keys().hasAny(['aiLabel']) || (data.aiLabel is string && data.aiLabel.size() <= 120)) &&
       (!data.keys().hasAny(['aiExplanation']) || (data.aiExplanation is string && data.aiExplanation.size() <= 500)) &&
+      (!data.keys().hasAny(['aiDetectedCategory']) || (data.aiDetectedCategory is string && data.aiDetectedCategory.size() <= 120)) &&
+      (!data.keys().hasAny(['aiDetectedProblem']) || (data.aiDetectedProblem is string && data.aiDetectedProblem.size() <= 160)) &&
+      (!data.keys().hasAny(['aiImageDescription']) || (data.aiImageDescription is string && data.aiImageDescription.size() <= 500)) &&
+      (!data.keys().hasAny(['aiImageSeverity']) || data.aiImageSeverity in ['Low', 'Medium', 'High', 'Critical']) &&
+      (!data.keys().hasAny(['aiSuggestedDepartment']) || (data.aiSuggestedDepartment is string && data.aiSuggestedDepartment.size() <= 120)) &&
+      (!data.keys().hasAny(['aiAnalyzedAt']) || (data.aiAnalyzedAt is string && data.aiAnalyzedAt.size() <= 64)) &&
+      (!data.keys().hasAny(['aiImageQuality']) || data.aiImageQuality in ['Good', 'Poor', 'Unclear']) &&
+      (!data.keys().hasAny(['aiVisibleEvidence']) || (
+        data.aiVisibleEvidence is list &&
+        data.aiVisibleEvidence.size() <= 8 &&
+        (data.aiVisibleEvidence.size() == 0 || (data.aiVisibleEvidence[0] is string && data.aiVisibleEvidence[0].size() <= 140))
+      )) &&
+      (!data.keys().hasAny(['citizenConfirmedCategory']) || data.citizenConfirmedCategory is bool) &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp &&
       (!data.keys().hasAny(['resolvedAt']) || data.resolvedAt is timestamp);
@@ -162,7 +282,7 @@ service cloud.firestore {
       data.keys().hasOnly([
         'id', 'title', 'category', 'priority', 'status',
         'latitude', 'longitude', 'address', 'wardId',
-        'assignedDepartmentId', 'createdAt', 'updatedAt'
+        'assignedDepartmentId', 'assignedAuthorityId', 'createdAt', 'updatedAt'
       ]) &&
       isValidId(data.id) &&
       data.title is string && data.title.size() >= 4 && data.title.size() <= 160 &&
@@ -174,6 +294,7 @@ service cloud.firestore {
       data.address is string && data.address.size() >= 2 && data.address.size() <= 280 &&
       (!data.keys().hasAny(['wardId']) || (data.wardId is string && data.wardId.size() <= 64)) &&
       (!data.keys().hasAny(['assignedDepartmentId']) || (data.assignedDepartmentId is string && data.assignedDepartmentId.size() <= 64)) &&
+      (!data.keys().hasAny(['assignedAuthorityId']) || (data.assignedAuthorityId is string && data.assignedAuthorityId.size() <= 128)) &&
       data.createdAt is timestamp &&
       data.updatedAt is timestamp;
     }
@@ -233,7 +354,7 @@ service cloud.firestore {
         isValidId(data.id) &&
         isValidId(data.actorId) &&
         (!data.keys().hasAny(['actorName']) || (data.actorName is string && data.actorName.size() <= 120)) &&
-        data.actorRole in ['admin', 'authority'] &&
+        data.actorRole in ['admin', 'authority', 'system', 'citizen'] &&
         data.action is string && data.action.size() >= 2 && data.action.size() <= 120 &&
         data.targetType is string && data.targetType.size() >= 2 && data.targetType.size() <= 64 &&
         data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 &&
@@ -245,8 +366,12 @@ service cloud.firestore {
 
     // Users (Role Metadata — PII isolated in /private/info)
     match /users/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isAuthority() || isAdmin());
-      allow list: if isAdmin() || isAuthority();
+      allow get: if isValidId(userId) && isSignedIn() && (
+        isOwner(userId) ||
+        isAdmin() ||
+        (isAuthority() && resource.data.role == 'authority')
+      );
+      allow list: if isAdmin() || (isAuthority() && resource.data.role == 'authority');
       allow create: if isSignedIn() &&
         isValidId(userId) &&
         isValidUser(incoming()) &&
@@ -254,10 +379,13 @@ service cloud.firestore {
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         (
-          (isOwner(userId) && (
-            incoming().role == 'citizen' ||
-            (isVerifiedUser() && request.auth.token.email == '4al24cd025@aiet.org.in' && incoming().role == 'admin')
-          )) ||
+          (isOwner(userId) &&
+            incoming().active == true &&
+            !incoming().keys().hasAny(['departmentId', 'approvedBy', 'approvedAt']) &&
+            (!incoming().keys().hasAny(['accountStatus']) || incoming().accountStatus in ['active', 'pending_verification']) && (
+              incoming().role == 'citizen' ||
+              (isVerifiedBootstrapAdmin() && incoming().role == 'admin')
+            )) ||
           isAdmin()
         );
       allow update: if isSignedIn() &&
@@ -268,9 +396,20 @@ service cloud.firestore {
         incoming().updatedAt == request.time && (
           isAdmin() ||
           (isOwner(userId) &&
+            existing().active == true &&
             incoming().role == existing().role &&
-            incoming().active == existing().active &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'wardId', 'updatedAt']))
+            incoming().active == existing().active && (
+              (existing().role == 'authority' &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])) ||
+              (existing().role != 'authority' && (
+                incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'wardId', 'updatedAt']) ||
+                (incoming().diff(existing()).affectedKeys().hasOnly([
+                  'accountStatus', 'designation', 'municipality', 'employeeId', 'updatedAt'
+                ]) &&
+                  incoming().role == 'citizen' &&
+                  incoming().accountStatus == 'pending_verification')
+              ))
+            ))
         );
       allow delete: if isValidId(userId) && isAdmin();
 
@@ -306,10 +445,47 @@ service cloud.firestore {
       allow delete: if isValidId(userId) && isAdmin();
     }
 
-    // Municipal Departments (non-PII reference catalog — authenticated access only)
+    // Municipal Authority Access Applications (Private to Applicant & Admins)
+    match /authority_applications/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidAuthorityApplication(incoming()) &&
+        incoming().id == userId &&
+        incoming().uid == request.auth.uid &&
+        incoming().status == 'pending_verification' &&
+        incoming().emailVerified == (request.auth.token.email_verified == true) &&
+        !incoming().keys().hasAny(['reviewedBy', 'reviewedByName', 'reviewedAt', 'rejectionReason']) &&
+        incoming().submittedAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isSignedIn() &&
+        isValidId(userId) &&
+        isValidAuthorityApplication(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().uid == existing().uid &&
+        incoming().submittedAt == existing().submittedAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isOwner(userId) && (
+            (existing().status == 'pending_verification' &&
+              incoming().status == 'pending_verification' &&
+              incoming().emailVerified == (request.auth.token.email_verified == true) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['emailVerified', 'updatedAt'])) ||
+            (existing().status == 'rejected' &&
+              incoming().status == 'pending_verification' &&
+              incoming().emailVerified == (request.auth.token.email_verified == true) &&
+              !incoming().keys().hasAny(['reviewedBy', 'reviewedByName', 'reviewedAt', 'rejectionReason']))
+          ))
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Municipal Departments (non-PII reference catalog — active authenticated access only)
     match /departments/{departmentId} {
-      allow get: if isValidId(departmentId) && isSignedIn();
-      allow list: if isSignedIn() && (isAdmin() || resource.data.active == true);
+      allow get: if isValidId(departmentId) && isActiveUser();
+      allow list: if isActiveUser() && (isAdmin() || resource.data.active == true);
       allow create: if isValidId(departmentId) &&
         isAdmin() &&
         isValidDepartment(incoming()) &&
@@ -323,10 +499,10 @@ service cloud.firestore {
       allow delete: if isValidId(departmentId) && isAdmin();
     }
 
-    // Municipal Wards (non-PII spatial reference catalog — authenticated access only)
+    // Municipal Wards (non-PII spatial reference catalog — active authenticated access only)
     match /wards/{wardId} {
-      allow get: if isValidId(wardId) && isSignedIn();
-      allow list: if isSignedIn() && (isAdmin() || resource.data.active == true);
+      allow get: if isValidId(wardId) && isActiveUser();
+      allow list: if isActiveUser() && (isAdmin() || resource.data.active == true);
       allow create: if isValidId(wardId) &&
         isAdmin() &&
         isValidWard(incoming()) &&
@@ -342,26 +518,26 @@ service cloud.firestore {
 
     // Civic Complaints
     match /complaints/{complaintId} {
-      allow get: if isValidId(complaintId) && isSignedIn() && (
+      allow get: if isValidId(complaintId) && isActiveUser() && (
         existing().citizenId == request.auth.uid ||
-        existing().assignedAuthorityId == request.auth.uid ||
-        isAuthority() ||
+        isAuthorityAuthorizedFor(existing()) ||
         isAdmin()
       );
-      allow list: if isSignedIn() && (
-        isAuthority() ||
+      allow list: if isActiveUser() && (
         isAdmin() ||
-        resource.data.citizenId == request.auth.uid
+        resource.data.citizenId == request.auth.uid ||
+        isAuthorityAuthorizedFor(resource.data)
       );
-      allow create: if isSignedIn() &&
+      allow create: if isActiveUser() &&
         isValidId(complaintId) &&
         isValidComplaint(incoming()) &&
         incoming().id == complaintId &&
         incoming().citizenId == request.auth.uid &&
         incoming().status == 'Submitted' &&
+        !incoming().keys().hasAny(['assignedAuthorityId', 'assignedAuthorityName', 'resolutionNotes', 'resolvedAt']) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
-      allow update: if isSignedIn() &&
+      allow update: if isActiveUser() &&
         isValidId(complaintId) &&
         isValidComplaint(incoming()) &&
         incoming().id == existing().id &&
@@ -374,7 +550,7 @@ service cloud.firestore {
               (existing().citizenId == request.auth.uid &&
                 existing().status == 'Submitted' &&
                 incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'address', 'photoUrl', 'updatedAt'])) ||
-              (isAuthority() &&
+              (isAuthorityAuthorizedFor(existing()) &&
                 incoming().diff(existing()).affectedKeys().hasOnly([
                   'status', 'priority', 'assignedDepartmentId', 'assignedAuthorityId', 'assignedAuthorityName', 'resolutionNotes', 'resolvedAt', 'updatedAt'
                 ]))
@@ -385,17 +561,17 @@ service cloud.firestore {
 
       // Master Gate Subcollection: Complaint Timeline Updates
       match /updates/{updateId} {
-        allow get: if isValidId(complaintId) && isValidId(updateId) && isSignedIn() && (
+        allow get: if isValidId(complaintId) && isValidId(updateId) && isActiveUser() && (
           get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid ||
-          isAuthority() ||
+          isAuthorityAuthorizedFor(get(/databases/$(database)/documents/complaints/$(complaintId)).data) ||
           isAdmin()
         );
-        allow list: if isSignedIn() && (
-          isAuthority() ||
+        allow list: if isActiveUser() && (
           isAdmin() ||
-          get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid
+          get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid ||
+          isAuthorityAuthorizedFor(get(/databases/$(database)/documents/complaints/$(complaintId)).data)
         );
-        allow create: if isSignedIn() &&
+        allow create: if isActiveUser() &&
           isValidId(complaintId) &&
           isValidId(updateId) &&
           isValidComplaintUpdate(incoming()) &&
@@ -405,36 +581,40 @@ service cloud.firestore {
           incoming().createdAt == request.time &&
           exists(/databases/$(database)/documents/complaints/$(complaintId)) && (
             isAdmin() ||
-            isAuthority() ||
+            isAuthorityAuthorizedFor(get(/databases/$(database)/documents/complaints/$(complaintId)).data) ||
             get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid
           );
         allow update, delete: if false;
       }
     }
 
-    // Authenticated Non-PII GIS Markers
+    // Role-Scoped GIS Markers (Admin: citywide; Authority: authorized department/ward; Citizen: own markers on create/get only)
     match /gis_markers/{complaintId} {
-      allow get: if isValidId(complaintId) && isSignedIn();
-      allow list: if isSignedIn() && (
-        isAuthority() ||
+      allow get: if isValidId(complaintId) && isActiveUser() && (
         isAdmin() ||
-        resource.data.status in ['Submitted', 'Under Review', 'Assigned', 'In Progress', 'Resolved', 'Rejected']
+        isAuthorityAuthorizedFor(existing()) ||
+        get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid
       );
-      allow create: if isSignedIn() &&
+      allow list: if isActiveUser() && (
+        isAdmin() ||
+        isAuthorityAuthorizedFor(resource.data)
+      );
+      allow create: if isActiveUser() &&
         isValidId(complaintId) &&
         isValidGisMarker(incoming()) &&
         incoming().id == complaintId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        exists(/databases/$(database)/documents/complaints/$(complaintId));
-      allow update: if isSignedIn() &&
+        exists(/databases/$(database)/documents/complaints/$(complaintId)) &&
+        get(/databases/$(database)/documents/complaints/$(complaintId)).data.citizenId == request.auth.uid;
+      allow update: if isActiveUser() &&
         isValidId(complaintId) &&
         isValidGisMarker(incoming()) &&
         incoming().id == existing().id &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        (isAuthority() || isAdmin()) &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'priority', 'assignedDepartmentId', 'updatedAt']);
+        (isAdmin() || isAuthorityAuthorizedFor(existing())) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'priority', 'assignedDepartmentId', 'assignedAuthorityId', 'updatedAt']);
       allow delete: if isValidId(complaintId) && isAdmin();
     }
 
@@ -442,13 +622,14 @@ service cloud.firestore {
     match /duplicate_matches/{matchId} {
       allow get: if isValidId(matchId) && (isAuthority() || isAdmin());
       allow list: if isAuthority() || isAdmin();
-      allow create: if isSignedIn() &&
+      allow create: if isActiveUser() &&
         isValidId(matchId) &&
         isValidDuplicateMatch(incoming()) &&
         incoming().id == matchId &&
         incoming().createdAt == request.time &&
         exists(/databases/$(database)/documents/complaints/$(incoming().sourceComplaintId)) &&
-        exists(/databases/$(database)/documents/complaints/$(incoming().matchedComplaintId));
+        exists(/databases/$(database)/documents/complaints/$(incoming().matchedComplaintId)) &&
+        get(/databases/$(database)/documents/complaints/$(incoming().sourceComplaintId)).data.citizenId == request.auth.uid;
       allow update: if isValidId(matchId) &&
         (isAuthority() || isAdmin()) &&
         isValidDuplicateMatch(incoming()) &&
@@ -460,17 +641,17 @@ service cloud.firestore {
 
     // Notifications
     match /notifications/{notificationId} {
-      allow get: if isValidId(notificationId) && isSignedIn() && (
+      allow get: if isValidId(notificationId) && isActiveUser() && (
         existing().recipientId == request.auth.uid || isAdmin()
       );
-      allow list: if isSignedIn() && (isAdmin() || resource.data.recipientId == request.auth.uid);
-      allow create: if isSignedIn() &&
+      allow list: if isActiveUser() && (isAdmin() || resource.data.recipientId == request.auth.uid);
+      allow create: if isActiveUser() &&
         isValidId(notificationId) &&
         isValidNotification(incoming()) &&
         incoming().id == notificationId &&
         incoming().createdAt == request.time &&
         (incoming().recipientId == request.auth.uid || isAuthority() || isAdmin());
-      allow update: if isSignedIn() &&
+      allow update: if isActiveUser() &&
         isValidId(notificationId) &&
         isValidNotification(incoming()) &&
         incoming().id == existing().id &&
@@ -478,19 +659,27 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         (existing().recipientId == request.auth.uid || isAdmin()) &&
         incoming().diff(existing()).affectedKeys().hasOnly(['read']);
-      allow delete: if isValidId(notificationId) && (existing().recipientId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(notificationId) && isActiveUser() && (existing().recipientId == request.auth.uid || isAdmin());
     }
 
     // Audit Logs (Immutable)
     match /audit_logs/{logId} {
-      allow get: if isValidId(logId) && isAdmin();
-      allow list: if isAdmin();
+      allow get: if isValidId(logId) && (isAdmin() || isSystemUser());
+      allow list: if isAdmin() || isSystemUser();
       allow create: if isValidId(logId) &&
-        (isAdmin() || isAuthority()) &&
         isValidAuditLog(incoming()) &&
         incoming().id == logId &&
         incoming().actorId == request.auth.uid &&
-        incoming().createdAt == request.time;
+        incoming().createdAt == request.time && (
+          isAdmin() ||
+          isAuthority() ||
+          isSystemUser() ||
+          (isActiveUser() &&
+            incoming().actorRole == 'citizen' &&
+            incoming().action == 'AUTHORITY_APPLICATION_SUBMITTED' &&
+            incoming().targetType == 'authority_application' &&
+            incoming().targetId == request.auth.uid)
+        );
       allow update, delete: if false;
     }
 

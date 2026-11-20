@@ -4,6 +4,7 @@ import {
   User as FirebaseUser,
   createUserWithEmailAndPassword,
   getAuth,
+  sendEmailVerification,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -22,7 +23,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { UserProfile, UserRole } from '../shared/types';
+import { AccountStatus, UserProfile, UserRole, normalizeUserRole } from '../shared/types';
 
 export const BOOTSTRAP_ADMIN_EMAIL = '4al24cd025@aiet.org.in';
 
@@ -223,6 +224,17 @@ export async function resetPasswordFirebase(email: string) {
   }
 }
 
+export async function sendEmailVerificationFirebase(): Promise<void> {
+  if (!auth?.currentUser) throw new Error('No signed-in Firebase user found.');
+  await sendEmailVerification(auth.currentUser);
+}
+
+export async function reloadFirebaseUser(): Promise<FirebaseUser | null> {
+  if (!auth?.currentUser) return null;
+  await auth.currentUser.reload();
+  return auth.currentUser;
+}
+
 export async function signOutFirebase() {
   if (!auth) return;
   await signOut(auth);
@@ -236,9 +248,17 @@ function toIsoString(val: unknown): string {
   return new Date().toISOString();
 }
 
+export class AccountAccessError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AccountAccessError';
+  }
+}
+
 export async function ensureUserProfileInFirestore(
   fbUser: FirebaseUser,
-  overrides?: { displayName?: string; wardId?: string; phone?: string }
+  overrides?: { displayName?: string; wardId?: string; phone?: string; accountStatus?: AccountStatus },
+  options?: { allowAutoProvision?: boolean }
 ): Promise<UserProfile> {
   if (!db) throw new Error('Cloud Firestore is not initialized.');
 
@@ -251,7 +271,12 @@ export async function ensureUserProfileInFirestore(
     fbUser.emailVerified && fbUser.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL;
 
   try {
-    const userSnap = await getDoc(userRef);
+    const [userSnap, adminSnap] = await Promise.all([
+      getDoc(userRef),
+      getDoc(doc(db, 'admins', fbUser.uid)).catch(() => null),
+    ]);
+    const hasAdminRegistry = Boolean(adminSnap && adminSnap.exists());
+
     const desiredName = (
       overrides?.displayName ||
       fbUser.displayName ||
@@ -263,27 +288,51 @@ export async function ensureUserProfileInFirestore(
     const desiredWard = (overrides?.wardId || 'ward_14').slice(0, 64);
 
     if (!userSnap.exists()) {
-      const initialRole: UserRole = isBootstrapAdmin ? 'admin' : 'citizen';
+      const canProvision = Boolean(options?.allowAutoProvision || isBootstrapAdmin || hasAdminRegistry);
+      if (!canProvision) {
+        throw new AccountAccessError(
+          'No active role profile was found for this account in Cloud Firestore. Please complete Citizen Registration or Request Authority Access.'
+        );
+      }
+      const initialRole: UserRole = isBootstrapAdmin || hasAdminRegistry ? 'admin' : 'citizen';
+      const initialStatus: AccountStatus =
+        overrides?.accountStatus === 'pending_verification' && initialRole === 'citizen'
+          ? 'pending_verification'
+          : 'active';
       await setDoc(userRef, {
         uid: fbUser.uid,
         displayName: desiredName,
         role: initialRole,
+        accountStatus: initialStatus,
         wardId: desiredWard,
         active: true,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else if (overrides?.displayName || overrides?.wardId) {
-      const registrationPatch: Record<string, unknown> = {
-        updatedAt: serverTimestamp(),
-      };
-      if (overrides.displayName && overrides.displayName.trim()) {
-        registrationPatch.displayName = overrides.displayName.trim().slice(0, 120);
+    } else {
+      const existingData = userSnap.data() || {};
+      if (existingData.active === false && existingData.accountStatus !== 'suspended') {
+        throw new AccountAccessError(
+          'Your account has been deactivated by an administrator. Access is denied.'
+        );
       }
-      if (overrides.wardId) {
-        registrationPatch.wardId = overrides.wardId.slice(0, 64);
+      if (!isBootstrapAdmin && !hasAdminRegistry && (typeof existingData.role !== 'string' || !existingData.role.trim())) {
+        throw new AccountAccessError(
+          'Account role record is missing or incomplete. Please contact an administrator.'
+        );
       }
-      await updateDoc(userRef, registrationPatch);
+      if ((overrides?.displayName || overrides?.wardId) && existingData.role !== 'authority') {
+        const registrationPatch: Record<string, unknown> = {
+          updatedAt: serverTimestamp(),
+        };
+        if (overrides.displayName && overrides.displayName.trim()) {
+          registrationPatch.displayName = overrides.displayName.trim().slice(0, 120);
+        }
+        if (overrides.wardId) {
+          registrationPatch.wardId = overrides.wardId.slice(0, 64);
+        }
+        await updateDoc(userRef, registrationPatch);
+      }
     }
 
     const privateData: Record<string, unknown> = {
@@ -316,13 +365,32 @@ export async function ensureUserProfileInFirestore(
     const data = freshUserSnap.data() || {};
     const priv = freshPrivateSnap.data() || {};
 
+    if (data.active === false && data.accountStatus !== 'suspended') {
+      throw new AccountAccessError(
+        'Your account has been deactivated by an administrator. Access is denied.'
+      );
+    }
+
+    const resolvedRole: UserRole =
+      isBootstrapAdmin || hasAdminRegistry ? 'admin' : normalizeUserRole(data.role);
+    const resolvedAccountStatus: AccountStatus =
+      (data.accountStatus as AccountStatus | undefined) ||
+      (resolvedRole === 'authority' ? 'pending_verification' : 'active');
+
     return {
       uid: fbUser.uid,
       email: (priv.email as string) || fbUser.email || '',
       displayName: (data.displayName as string) || desiredName,
-      role: (isBootstrapAdmin ? 'admin' : (data.role as UserRole)) || 'citizen',
+      role: resolvedRole,
+      accountStatus: resolvedAccountStatus,
       departmentId: data.departmentId as string | undefined,
       wardId: (data.wardId as string) || desiredWard,
+      designation: data.designation as string | undefined,
+      municipality: data.municipality as string | undefined,
+      employeeId: data.employeeId as string | undefined,
+      approvedBy: data.approvedBy as string | undefined,
+      approvedAt: data.approvedAt ? toIsoString(data.approvedAt) : undefined,
+      emailVerified: fbUser.emailVerified,
       phone: priv.phone as string | undefined,
       active: data.active !== false,
       authProvider: 'firebase',
@@ -330,6 +398,9 @@ export async function ensureUserProfileInFirestore(
       updatedAt: toIsoString(data.updatedAt),
     };
   } catch (error) {
+    if (error instanceof AccountAccessError) {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.WRITE, `${userPath} | ${privatePath}`);
   }
 }
@@ -337,7 +408,8 @@ export async function ensureUserProfileInFirestore(
 export async function updateUserProfileInFirestore(
   uid: string,
   email: string,
-  patch: { displayName?: string; wardId?: string; phone?: string }
+  patch: { displayName?: string; wardId?: string; phone?: string },
+  currentRole?: UserRole
 ): Promise<UserProfile> {
   if (!db) throw new Error('Cloud Firestore is not initialized.');
   const userRef = doc(db, 'users', uid);
@@ -353,7 +425,7 @@ export async function updateUserProfileInFirestore(
         });
       }
     }
-    if (patch.wardId) {
+    if (patch.wardId && currentRole !== 'authority') {
       publicPatch.wardId = patch.wardId.slice(0, 64);
     }
     await updateDoc(userRef, publicPatch);
@@ -367,16 +439,29 @@ export async function updateUserProfileInFirestore(
     }
     await updateDoc(privateRef, privatePatch);
 
-    const [freshUser, freshPriv] = await Promise.all([getDoc(userRef), getDoc(privateRef)]);
+    const [freshUser, freshPriv, adminSnap] = await Promise.all([
+      getDoc(userRef),
+      getDoc(privateRef),
+      getDoc(doc(db, 'admins', uid)).catch(() => null),
+    ]);
     const d = freshUser.data() || {};
     const p = freshPriv.data() || {};
+    const isAdminReg = Boolean(adminSnap && adminSnap.exists());
+    const resolvedRole = isAdminReg ? 'admin' : normalizeUserRole(d.role);
     return {
       uid,
       email: (p.email as string) || email,
       displayName: (d.displayName as string) || '',
-      role: (d.role as UserRole) || 'citizen',
+      role: resolvedRole,
+      accountStatus: (d.accountStatus as AccountStatus | undefined) || 'active',
       departmentId: d.departmentId as string | undefined,
       wardId: d.wardId as string | undefined,
+      designation: d.designation as string | undefined,
+      municipality: d.municipality as string | undefined,
+      employeeId: d.employeeId as string | undefined,
+      approvedBy: d.approvedBy as string | undefined,
+      approvedAt: d.approvedAt ? toIsoString(d.approvedAt) : undefined,
+      emailVerified: auth?.currentUser?.emailVerified,
       phone: p.phone as string | undefined,
       active: d.active !== false,
       authProvider: 'firebase',

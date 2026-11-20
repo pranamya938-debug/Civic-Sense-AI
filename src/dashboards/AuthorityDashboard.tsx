@@ -3,10 +3,10 @@ import { Search, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
   reviewDuplicateMatchInFirestore,
-  subscribeAllComplaints,
+  subscribeAuthorityComplaints,
+  subscribeAuthorityOfficers,
   subscribeDepartments,
   subscribeDuplicateMatches,
-  subscribeUsers,
   subscribeWards,
 } from '../services/firestoreService';
 import { MUNICIPAL_DEPARTMENTS, MUNICIPAL_WARDS } from '../shared/catalog';
@@ -38,37 +38,44 @@ export const AuthorityDashboard: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState('All');
   const [selectedComplaint, setSelectedComplaint] = useState<ComplaintRecord | null>(null);
 
+  const isAuthorized = Boolean(
+    user &&
+      user.active &&
+      (user.role === 'admin' ||
+        (user.role === 'authority' &&
+          user.accountStatus === 'approved' &&
+          user.emailVerified !== false))
+  );
+
   useEffect(() => {
-    if (!user?.uid || (user.role !== 'authority' && user.role !== 'admin')) {
+    if (!user?.uid || !isAuthorized) {
       return;
     }
     const unsubDepts = subscribeDepartments(setDepartments);
     const unsubWards = subscribeWards(setWards);
-    const unsubUsers = subscribeUsers(false, (list) =>
-      setAuthorities(list.filter((u) => u.role === 'authority' || u.role === 'admin'))
-    );
+    const unsubOfficers = subscribeAuthorityOfficers(setAuthorities);
     const unsubDups = subscribeDuplicateMatches(setDuplicates);
     return () => {
       unsubDepts();
       unsubWards();
-      unsubUsers();
+      unsubOfficers();
       unsubDups();
     };
-  }, [user?.uid, user?.role]);
+  }, [user?.uid, isAuthorized]);
 
   useEffect(() => {
-    if (!user?.uid || (user.role !== 'authority' && user.role !== 'admin')) {
+    if (!user?.uid || !isAuthorized) {
       setComplaints([]);
       setLoading(false);
       return;
     }
     setLoading(true);
-    const unsub = subscribeAllComplaints(departments, (list) => {
+    const unsub = subscribeAuthorityComplaints(user, departments, (list) => {
       setComplaints(list);
       setLoading(false);
     });
     return () => unsub();
-  }, [user?.uid, user?.role, departments]);
+  }, [user, isAuthorized, departments]);
 
   const filtered = complaints.filter((c) => {
     if (categoryFilter !== 'All' && c.category !== categoryFilter) return false;
@@ -95,16 +102,33 @@ export const AuthorityDashboard: React.FC = () => {
 
   const deptName = (id?: string) => departments.find((d) => d.id === id)?.name || 'Unassigned';
   const wardName = (id: string) => wards.find((w) => w.id === id)?.name || id;
+  const visibleComplaintIds = new Set(complaints.map((c) => c.id));
+  const scopedDuplicates =
+    user?.role === 'admin'
+      ? duplicates
+      : duplicates.filter(
+          (d) =>
+            visibleComplaintIds.has(d.sourceComplaintId) ||
+            visibleComplaintIds.has(d.matchedComplaintId)
+        );
 
   return (
     <div className="max-w-[1380px] mx-auto px-4 sm:px-6 py-8 space-y-6">
-      <div>
-        <div className="text-xs font-medium text-emerald-700">
-          Municipal Operations Console · Officer {user?.displayName}
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium text-emerald-700">
+            Municipal Operations Console · Officer {user?.displayName}
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-display font-bold text-[#0B3B2E] mt-1">
+            Incoming Civic Grievances & Dispatch
+          </h1>
         </div>
-        <h1 className="text-2xl sm:text-3xl font-display font-bold text-[#0B3B2E] mt-1">
-          Incoming Civic Grievances & Dispatch
-        </h1>
+        {user?.role === 'authority' && (
+          <div className="text-xs text-neutral-600 bg-white border border-neutral-200 rounded-lg px-3 py-2">
+            Scope: <span className="font-semibold text-[#0B3B2E]">{user.departmentId ? deptName(user.departmentId) : 'Unassigned Dept'}</span>
+            {user.wardId ? ` · ${wardName(user.wardId)}` : ''}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -252,14 +276,14 @@ export const AuthorityDashboard: React.FC = () => {
         )}
       </div>
 
-      {duplicates.some((d) => d.reviewStatus === 'pending_review') && user && (
+      {scopedDuplicates.some((d) => d.reviewStatus === 'pending_review') && user && (
         <div className="bg-white border border-amber-200 rounded-xl p-5 space-y-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-amber-900">
             <ShieldAlert className="w-4 h-4" />
             Pending Duplicate Complaint Reviews
           </div>
           <div className="space-y-2">
-            {duplicates
+            {scopedDuplicates
               .filter((d) => d.reviewStatus === 'pending_review')
               .map((d) => (
                 <div

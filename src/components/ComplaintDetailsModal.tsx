@@ -249,6 +249,45 @@ export const ComplaintDetailsModal: React.FC<ComplaintDetailsModalProps> = ({
                   </span>
                 </div>
               </div>
+
+              {(complaint.aiImageDescription || complaint.aiDetectedProblem) && (
+                <div className="bg-[#F7F9F8] border border-emerald-200 rounded-lg p-4 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-[#0B3B2E]">
+                      Gemini Multimodal Visual Inspection
+                    </span>
+                    {complaint.aiImageSeverity && (
+                      <span className="px-2 py-0.5 text-[11px] font-medium bg-white border border-neutral-300 rounded text-[#0B3B2E]">
+                        Visual Severity: {complaint.aiImageSeverity}
+                      </span>
+                    )}
+                  </div>
+                  {complaint.aiDetectedProblem && (
+                    <div className="text-xs text-neutral-800">
+                      <span className="font-semibold">Detected Issue:</span> {complaint.aiDetectedProblem}
+                      {complaint.aiDetectedCategory ? ` (${complaint.aiDetectedCategory})` : ''}
+                    </div>
+                  )}
+                  {complaint.aiImageDescription && (
+                    <p className="text-xs text-neutral-700 leading-relaxed">
+                      {complaint.aiImageDescription}
+                    </p>
+                  )}
+                  {complaint.aiVisibleEvidence && complaint.aiVisibleEvidence.length > 0 && (
+                    <ul className="text-[11px] text-neutral-600 list-disc pl-4 space-y-0.5">
+                      {complaint.aiVisibleEvidence.map((item, idx) => (
+                        <li key={idx}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {complaint.aiAnalyzedAt && (
+                    <div className="text-[11px] font-mono text-neutral-500">
+                      Inspected {new Date(complaint.aiAnalyzedAt).toLocaleString()}
+                      {complaint.citizenConfirmedCategory ? ' · Category confirmed by citizen' : ''}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">

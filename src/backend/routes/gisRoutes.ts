@@ -1,39 +1,48 @@
 import { Router } from 'express';
-import { AuthenticatedRequest, requireAuth } from '../middleware/authMiddleware.ts';
+import {
+  AuthenticatedRequest,
+  loadRoleScopedCollectionDocs,
+  requireAuth,
+  requireRole,
+} from '../middleware/authMiddleware.ts';
 import { firestoreListCollection } from '../services/firestoreRestService.ts';
 import { MUNICIPAL_DEPARTMENTS, MUNICIPAL_WARDS } from '../../shared/catalog.ts';
-import { COMPLAINT_STATUSES, Department, Ward } from '../../shared/types.ts';
+import { Department, Ward } from '../../shared/types.ts';
 
 export const gisRoutes = Router();
 
-gisRoutes.get('/complaints', requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const token = req.firebaseIdToken!;
-    const { category, priority, wardId, status } = req.query as Record<string, string>;
-    let markers = await firestoreListCollection<Record<string, unknown>>(
-      'gis_markers',
-      token,
-      500,
-      {
-        field: 'status',
-        op: 'IN',
-        value: [...COMPLAINT_STATUSES],
-      }
-    );
+gisRoutes.get(
+  '/complaints',
+  requireAuth,
+  requireRole('authority', 'admin'),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const token = req.firebaseIdToken!;
+      const { category, priority, wardId, status } = req.query as Record<string, string>;
+      let markers = await loadRoleScopedCollectionDocs<Record<string, unknown>>(
+        'gis_markers',
+        req.user!,
+        token,
+        500
+      );
 
-    if (category && category !== 'All') markers = markers.filter((c) => c.category === category);
-    if (priority && priority !== 'All') markers = markers.filter((c) => c.priority === priority);
-    if (wardId && wardId !== 'All') markers = markers.filter((c) => c.wardId === wardId);
-    if (status && status !== 'All') markers = markers.filter((c) => c.status === status);
+      if (category && category !== 'All') markers = markers.filter((c) => c.category === category);
+      if (priority && priority !== 'All') markers = markers.filter((c) => c.priority === priority);
+      if (wardId && wardId !== 'All') markers = markers.filter((c) => c.wardId === wardId);
+      if (status && status !== 'All') markers = markers.filter((c) => c.status === status);
 
-    res.json({
-      complaints: markers,
-      geoJsonNotice: 'Coordinates are real WGS84 points stored in Cloud Firestore.',
-    });
-  } catch (err) {
-    next(err);
+      res.json({
+        complaints: markers,
+        geoJsonNotice:
+          req.user!.role === 'authority'
+            ? 'Displaying WGS84 markers scoped to your authorized department or ward.'
+            : 'Coordinates are real WGS84 points stored in Cloud Firestore.',
+      });
+    } catch (err) {
+      next(err);
+    }
   }
-});
+);
 
 gisRoutes.get('/wards', requireAuth, async (req: AuthenticatedRequest, res, next) => {
   try {

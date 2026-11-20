@@ -13,9 +13,12 @@ import {
 } from 'firebase/firestore';
 import { MUNICIPAL_DEPARTMENTS, MUNICIPAL_WARDS } from '../shared/catalog';
 import {
+  AccountStatus,
   AiPredictionResult,
   AppNotification,
   AuditLogEntry,
+  AuthorityApplication,
+  AuthorityApplicationStatus,
   COMPLAINT_STATUSES,
   CivicCategory,
   ComplaintPriority,
@@ -25,9 +28,12 @@ import {
   Department,
   DuplicateCandidate,
   DuplicateMatchRecord,
+  ImageAnalysisResult,
+  ImageQuality,
   UserProfile,
   UserRole,
   Ward,
+  normalizeUserRole,
 } from '../shared/types';
 import { MapComplaintPoint } from '../components/GisMap';
 import { OperationType, db, handleFirestoreError } from './firebaseClient';
@@ -83,6 +89,18 @@ function hydrateComplaint(
       matchedKeywords: [],
       explanation: (d.aiExplanation as string) || '',
     },
+    aiDetectedCategory: d.aiDetectedCategory as string | undefined,
+    aiDetectedProblem: d.aiDetectedProblem as string | undefined,
+    aiImageDescription: d.aiImageDescription as string | undefined,
+    aiImageSeverity: d.aiImageSeverity as ComplaintPriority | undefined,
+    aiSuggestedDepartment: d.aiSuggestedDepartment as string | undefined,
+    aiAnalyzedAt: d.aiAnalyzedAt as string | undefined,
+    aiImageQuality: d.aiImageQuality as ImageQuality | undefined,
+    aiVisibleEvidence: Array.isArray(d.aiVisibleEvidence)
+      ? (d.aiVisibleEvidence as unknown[]).map((x) => String(x))
+      : undefined,
+    citizenConfirmedCategory:
+      typeof d.citizenConfirmedCategory === 'boolean' ? d.citizenConfirmedCategory : undefined,
     potentialDuplicates: [],
     isDemoData: false,
     createdAt: toIso(d.createdAt),
@@ -158,8 +176,33 @@ export function subscribeWards(onData: (wards: Ward[]) => void): () => void {
   );
 }
 
+export type ScopedGisMarker = MapComplaintPoint & {
+  assignedDepartmentId?: string;
+  assignedAuthorityId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function mapGisMarkerDoc(id: string, d: Record<string, unknown>): ScopedGisMarker {
+  return {
+    id: (d.id as string) || id,
+    title: (d.title as string) || '',
+    category: (d.category as string) || 'Other Civic Issues',
+    priority: (d.priority as ComplaintPriority) || 'Medium',
+    status: (d.status as ComplaintStatus) || 'Submitted',
+    latitude: Number(d.latitude || 0),
+    longitude: Number(d.longitude || 0),
+    address: (d.address as string) || '',
+    wardId: (d.wardId as string) || 'ward_14',
+    assignedDepartmentId: d.assignedDepartmentId as string | undefined,
+    assignedAuthorityId: d.assignedAuthorityId as string | undefined,
+    createdAt: toIso(d.createdAt),
+    updatedAt: toIso(d.updatedAt),
+  };
+}
+
 export function subscribeGisMarkers(
-  onData: (markers: (MapComplaintPoint & { assignedDepartmentId?: string; createdAt: string; updatedAt: string })[]) => void
+  onData: (markers: ScopedGisMarker[]) => void
 ): () => void {
   if (!db) {
     onData([]);
@@ -169,23 +212,47 @@ export function subscribeGisMarkers(
   return onSnapshot(
     q,
     (snap) => {
-      const list = snap.docs.map((s) => {
-        const d = s.data();
-        return {
-          id: (d.id as string) || s.id,
-          title: (d.title as string) || '',
-          category: (d.category as string) || 'Other Civic Issues',
-          priority: (d.priority as ComplaintPriority) || 'Medium',
-          status: (d.status as ComplaintStatus) || 'Submitted',
-          latitude: Number(d.latitude || 0),
-          longitude: Number(d.longitude || 0),
-          address: (d.address as string) || '',
-          wardId: (d.wardId as string) || 'ward_14',
-          assignedDepartmentId: d.assignedDepartmentId as string | undefined,
-          createdAt: toIso(d.createdAt),
-          updatedAt: toIso(d.updatedAt),
-        };
-      });
+      const list = snap.docs.map((s) => mapGisMarkerDoc(s.id, s.data()));
+      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      onData(list);
+    },
+    (err) => handleFirestoreError(err, OperationType.LIST, 'gis_markers')
+  );
+}
+
+export function subscribeScopedGisMarkers(
+  user: UserProfile | null,
+  onData: (markers: ScopedGisMarker[]) => void
+): () => void {
+  if (!db || !user || !user.active) {
+    onData([]);
+    return () => {};
+  }
+  if (user.role === 'admin') {
+    return subscribeGisMarkers(onData);
+  }
+  if (user.role !== 'authority' || user.accountStatus !== 'approved') {
+    onData([]);
+    return () => {};
+  }
+
+  const constraints = [];
+  if (user.departmentId) {
+    constraints.push(where('assignedDepartmentId', '==', user.departmentId));
+  }
+  if (user.wardId) {
+    constraints.push(where('wardId', '==', user.wardId));
+  }
+  if (constraints.length === 0) {
+    onData([]);
+    return () => {};
+  }
+
+  const q = query(collection(db, 'gis_markers'), ...constraints);
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list = snap.docs.map((s) => mapGisMarkerDoc(s.id, s.data()));
       list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       onData(list);
     },
@@ -224,6 +291,47 @@ export function subscribeAllComplaints(
   }
   return onSnapshot(
     collection(db, 'complaints'),
+    (snap) => {
+      const list = snap.docs.map((s) => hydrateComplaint(s.id, s.data(), departments));
+      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      onData(list);
+    },
+    (err) => handleFirestoreError(err, OperationType.LIST, 'complaints')
+  );
+}
+
+export function subscribeAuthorityComplaints(
+  user: UserProfile,
+  departments: Department[],
+  onData: (complaints: ComplaintRecord[]) => void
+): () => void {
+  if (!db || !user.active) {
+    onData([]);
+    return () => {};
+  }
+  if (user.role === 'admin') {
+    return subscribeAllComplaints(departments, onData);
+  }
+  if (user.role !== 'authority' || user.accountStatus !== 'approved') {
+    onData([]);
+    return () => {};
+  }
+
+  const constraints = [];
+  if (user.departmentId) {
+    constraints.push(where('assignedDepartmentId', '==', user.departmentId));
+  }
+  if (user.wardId) {
+    constraints.push(where('wardId', '==', user.wardId));
+  }
+  if (constraints.length === 0) {
+    onData([]);
+    return () => {};
+  }
+
+  const q = query(collection(db, 'complaints'), ...constraints);
+  return onSnapshot(
+    q,
     (snap) => {
       const list = snap.docs.map((s) => hydrateComplaint(s.id, s.data(), departments));
       list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -300,6 +408,41 @@ export function subscribeMyNotifications(
   );
 }
 
+export function subscribeAuthorityOfficers(
+  onData: (officers: UserProfile[]) => void
+): () => void {
+  if (!db) {
+    onData([]);
+    return () => {};
+  }
+  const q = query(collection(db, 'users'), where('role', '==', 'authority'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: UserProfile[] = snap.docs
+        .map((s) => {
+          const d = s.data();
+          return {
+            uid: (d.uid as string) || s.id,
+            email: '',
+            displayName: (d.displayName as string) || s.id,
+            role: normalizeUserRole(d.role),
+            accountStatus: (d.accountStatus as AccountStatus | undefined) || 'approved',
+            departmentId: d.departmentId as string | undefined,
+            wardId: d.wardId as string | undefined,
+            active: d.active !== false,
+            authProvider: 'firebase' as const,
+            createdAt: toIso(d.createdAt),
+            updatedAt: toIso(d.updatedAt),
+          };
+        })
+        .filter((u) => u.active && u.accountStatus === 'approved');
+      onData(list);
+    },
+    (err) => handleFirestoreError(err, OperationType.LIST, 'users')
+  );
+}
+
 export function subscribeUsers(
   isAdminViewer: boolean,
   onData: (users: UserProfile[]) => void
@@ -307,6 +450,9 @@ export function subscribeUsers(
   if (!db) {
     onData([]);
     return () => {};
+  }
+  if (!isAdminViewer) {
+    return subscribeAuthorityOfficers(onData);
   }
   return onSnapshot(
     collection(db, 'users'),
@@ -317,9 +463,15 @@ export function subscribeUsers(
           uid: (d.uid as string) || s.id,
           email: '',
           displayName: (d.displayName as string) || s.id,
-          role: (d.role as UserRole) || 'citizen',
+          role: normalizeUserRole(d.role),
+          accountStatus: (d.accountStatus as AccountStatus | undefined) || 'active',
           departmentId: d.departmentId as string | undefined,
           wardId: d.wardId as string | undefined,
+          designation: d.designation as string | undefined,
+          municipality: d.municipality as string | undefined,
+          employeeId: d.employeeId as string | undefined,
+          approvedBy: d.approvedBy as string | undefined,
+          approvedAt: d.approvedAt ? toIso(d.approvedAt) : undefined,
           active: d.active !== false,
           authProvider: 'firebase' as const,
           createdAt: toIso(d.createdAt),
@@ -327,7 +479,7 @@ export function subscribeUsers(
         };
       });
 
-      if (isAdminViewer && db) {
+      if (db) {
         await Promise.all(
           baseUsers.map(async (u) => {
             try {
@@ -411,6 +563,75 @@ export function subscribeAuditLogs(onData: (logs: AuditLogEntry[]) => void): () 
   );
 }
 
+function mapAuthorityApplicationDoc(
+  id: string,
+  d: Record<string, unknown>
+): AuthorityApplication {
+  return {
+    id: (d.id as string) || id,
+    uid: (d.uid as string) || id,
+    fullName: (d.fullName as string) || '',
+    officialEmail: (d.officialEmail as string) || '',
+    contactNumber: (d.contactNumber as string) || '',
+    employeeId: (d.employeeId as string) || '',
+    designation: (d.designation as string) || '',
+    municipality: (d.municipality as string) || '',
+    departmentId: (d.departmentId as string) || '',
+    departmentName: (d.departmentName as string) || '',
+    wardId: (d.wardId as string) || '',
+    wardName: (d.wardName as string) || '',
+    verificationDocUrl: d.verificationDocUrl as string | undefined,
+    verificationDocName: d.verificationDocName as string | undefined,
+    emailVerified: Boolean(d.emailVerified),
+    status: (d.status as AuthorityApplicationStatus) || 'pending_verification',
+    submittedAt: toIso(d.submittedAt),
+    updatedAt: toIso(d.updatedAt),
+    reviewedBy: d.reviewedBy as string | undefined,
+    reviewedByName: d.reviewedByName as string | undefined,
+    reviewedAt: d.reviewedAt ? toIso(d.reviewedAt) : undefined,
+    rejectionReason: d.rejectionReason as string | undefined,
+  };
+}
+
+export function subscribeAuthorityApplications(
+  onData: (applications: AuthorityApplication[]) => void
+): () => void {
+  if (!db) {
+    onData([]);
+    return () => {};
+  }
+  return onSnapshot(
+    collection(db, 'authority_applications'),
+    (snap) => {
+      const list = snap.docs.map((s) => mapAuthorityApplicationDoc(s.id, s.data()));
+      list.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+      onData(list);
+    },
+    (err) => handleFirestoreError(err, OperationType.LIST, 'authority_applications')
+  );
+}
+
+export function subscribeMyAuthorityApplication(
+  uid: string,
+  onData: (application: AuthorityApplication | null) => void
+): () => void {
+  if (!db || !uid) {
+    onData(null);
+    return () => {};
+  }
+  return onSnapshot(
+    doc(db, 'authority_applications', uid),
+    (snap) => {
+      if (!snap.exists()) {
+        onData(null);
+        return;
+      }
+      onData(mapAuthorityApplicationDoc(snap.id, snap.data()));
+    },
+    (err) => handleFirestoreError(err, OperationType.GET, `authority_applications/${uid}`)
+  );
+}
+
 export async function submitComplaintToFirestore(params: {
   citizen: UserProfile;
   title: string;
@@ -422,6 +643,8 @@ export async function submitComplaintToFirestore(params: {
   longitude: number;
   photoUrl?: string;
   aiPrediction: AiPredictionResult;
+  imageAnalysis?: ImageAnalysisResult | null;
+  citizenConfirmedCategory?: boolean;
   duplicates: DuplicateCandidate[];
 }): Promise<ComplaintRecord> {
   if (!db) throw new Error('Cloud Firestore is not initialized.');
@@ -450,6 +673,24 @@ export async function submitComplaintToFirestore(params: {
 
   if (params.photoUrl && params.photoUrl.length <= 500) {
     complaintPayload.photoUrl = params.photoUrl;
+  }
+  if (params.imageAnalysis) {
+    const img = params.imageAnalysis;
+    complaintPayload.aiDetectedCategory = img.detected_category.slice(0, 120);
+    complaintPayload.aiDetectedProblem = img.detected_problem.slice(0, 160);
+    complaintPayload.aiImageDescription = img.description.slice(0, 500);
+    complaintPayload.aiImageSeverity = img.severity;
+    complaintPayload.aiSuggestedDepartment = img.suggested_department.slice(0, 120);
+    complaintPayload.aiAnalyzedAt = img.analyzed_at.slice(0, 64);
+    complaintPayload.aiImageQuality = img.image_quality;
+    if (Array.isArray(img.visible_evidence)) {
+      complaintPayload.aiVisibleEvidence = img.visible_evidence
+        .map((e) => String(e).slice(0, 140))
+        .slice(0, 8);
+    }
+  }
+  if (typeof params.citizenConfirmedCategory === 'boolean') {
+    complaintPayload.citizenConfirmedCategory = params.citizenConfirmedCategory;
   }
 
   // Step 1: Write parent complaint document first so exists() security checks pass cleanly
@@ -575,6 +816,7 @@ export async function assignComplaintInFirestore(params: {
   });
   batch.update(doc(db, 'gis_markers', complaint.id), {
     assignedDepartmentId: department.id,
+    assignedAuthorityId: officerUid,
     status: nextStatus,
     updatedAt: serverTimestamp(),
   });
@@ -744,11 +986,12 @@ export async function updateUserByAdminInFirestore(
   actor: UserProfile
 ): Promise<void> {
   if (!db) throw new Error('Cloud Firestore is not initialized.');
+  const normalizedRole = patch.role ? normalizeUserRole(patch.role) : undefined;
   const userPatch: Record<string, unknown> = { updatedAt: serverTimestamp() };
-  if (patch.role) userPatch.role = patch.role;
+  if (normalizedRole) userPatch.role = normalizedRole;
   if (typeof patch.active === 'boolean') userPatch.active = patch.active;
-  if (patch.departmentId) userPatch.departmentId = patch.departmentId;
-  if (patch.wardId) userPatch.wardId = patch.wardId;
+  if (patch.departmentId !== undefined) userPatch.departmentId = patch.departmentId.slice(0, 64);
+  if (patch.wardId !== undefined) userPatch.wardId = patch.wardId.slice(0, 64);
 
   const batch = writeBatch(db);
   batch.update(doc(db, 'users', target.uid), userPatch);

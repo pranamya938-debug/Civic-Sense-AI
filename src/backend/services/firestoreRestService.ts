@@ -132,7 +132,7 @@ export async function firestoreListCollection<T = Record<string, unknown>>(
   collectionPath: string,
   idToken: string,
   pageSize = 200,
-  filter?: FirestoreQueryFilter
+  filter?: FirestoreQueryFilter | FirestoreQueryFilter[]
 ): Promise<T[]> {
   if (!idToken) {
     throw new ApiError(
@@ -151,13 +151,27 @@ export async function firestoreListCollection<T = Record<string, unknown>>(
     limit: pageSize,
   };
 
-  if (filter) {
-    const op = filter.op || 'EQUAL';
+  const filters = Array.isArray(filter) ? filter : filter ? [filter] : [];
+  if (filters.length === 1) {
+    const f = filters[0];
     structuredQuery.where = {
       fieldFilter: {
-        field: { fieldPath: filter.field },
-        op,
-        value: encodeFirestoreValue(filter.value),
+        field: { fieldPath: f.field },
+        op: f.op || 'EQUAL',
+        value: encodeFirestoreValue(f.value),
+      },
+    };
+  } else if (filters.length > 1) {
+    structuredQuery.where = {
+      compositeFilter: {
+        op: 'AND',
+        filters: filters.map((f) => ({
+          fieldFilter: {
+            field: { fieldPath: f.field },
+            op: f.op || 'EQUAL',
+            value: encodeFirestoreValue(f.value),
+          },
+        })),
       },
     };
   }
@@ -189,6 +203,7 @@ export interface BatchWriteOp {
   docPath: string;
   data?: Record<string, unknown>;
   serverTimestamps?: string[];
+  timestampFields?: string[];
   updateMask?: string[];
   deleteDoc?: boolean;
 }
@@ -203,10 +218,15 @@ export async function firestoreCommitBatch(ops: BatchWriteOp[], idToken: string)
     if (op.deleteDoc) {
       return { delete: fullName };
     }
+    const tsSet = new Set(op.timestampFields || []);
     const fields: Record<string, FirestoreValue> = {};
     for (const [k, v] of Object.entries(op.data || {})) {
       if (v !== undefined) {
-        fields[k] = encodeFirestoreValue(v);
+        if (tsSet.has(k) && typeof v === 'string') {
+          fields[k] = { timestampValue: new Date(v).toISOString() };
+        } else {
+          fields[k] = encodeFirestoreValue(v);
+        }
       }
     }
     const fieldTransforms = (op.serverTimestamps || []).map((fieldPath) => ({

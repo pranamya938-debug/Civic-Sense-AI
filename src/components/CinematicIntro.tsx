@@ -3,8 +3,10 @@ import { FastForward, PauseCircle, PlayCircle, Sparkles } from 'lucide-react';
 import heroCityscapeImg from '../assets/images/hero_indian_cityscape_1794910701758.jpg';
 
 interface CinematicIntroProps {
-  onSelectRole: (role: 'citizen' | 'authority' | 'admin') => void;
-  onExploreMap: () => void;
+  onGetStarted: () => void;
+  onExploreAction: () => void;
+  primaryCtaLabel?: string;
+  secondaryCtaLabel?: string;
 }
 
 const CIVIC_WAYPOINTS = [
@@ -16,8 +18,10 @@ const CIVIC_WAYPOINTS = [
 ];
 
 export const CinematicIntro: React.FC<CinematicIntroProps> = ({
-  onSelectRole,
-  onExploreMap,
+  onGetStarted,
+  onExploreAction,
+  primaryCtaLabel = 'Report or Track a Grievance',
+  secondaryCtaLabel = 'Sign In',
 }) => {
   const prefersReduced =
     typeof window !== 'undefined' &&
@@ -151,18 +155,18 @@ export const CinematicIntro: React.FC<CinematicIntroProps> = ({
                 <div className="mt-5 flex flex-wrap items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => onSelectRole('citizen')}
+                    onClick={onGetStarted}
                     className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <Sparkles className="w-4 h-4" />
-                    Report or Track a Grievance
+                    {primaryCtaLabel}
                   </button>
                   <button
                     type="button"
-                    onClick={onExploreMap}
+                    onClick={onExploreAction}
                     className="px-4 py-2.5 text-sm font-medium bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
-                    Explore Live GIS Map
+                    {secondaryCtaLabel}
                   </button>
                 </div>
               )}

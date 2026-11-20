@@ -54,14 +54,39 @@ export async function apiRequest<T>(
     headers: mergedHeaders,
   });
 
-  const isJson = response.headers.get('content-type')?.includes('application/json');
-  const payload = isJson ? await response.json() : null;
+  const rawText = await response.text();
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  const trimmed = rawText.trim();
+
+  let payload: unknown = null;
+  if (trimmed.length > 0 && (contentType.includes('application/json') || trimmed.startsWith('{') || trimmed.startsWith('['))) {
+    try {
+      payload = JSON.parse(trimmed);
+    } catch {
+      payload = null;
+    }
+  }
 
   if (!response.ok) {
-    const errMsg =
-      (payload && typeof payload === 'object' && 'error' in payload && String(payload.error)) ||
-      `Request failed (${response.status})`;
+    const parsedError =
+      payload !== null &&
+      typeof payload === 'object' &&
+      'error' in payload &&
+      (payload as Record<string, unknown>).error != null
+        ? String((payload as Record<string, unknown>).error)
+        : '';
+    const fallbackText =
+      trimmed && !trimmed.startsWith('<!') && !trimmed.startsWith('<html')
+        ? trimmed.slice(0, 200)
+        : '';
+    const errMsg: string = parsedError || fallbackText || `Request failed (${response.status})`;
     throw new Error(errMsg);
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    throw new Error(
+      `Unexpected non-JSON or empty response from ${path} (HTTP ${response.status}).`
+    );
   }
 
   return payload as T;

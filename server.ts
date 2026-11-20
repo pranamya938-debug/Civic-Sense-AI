@@ -14,6 +14,8 @@ import { notificationRoutes } from './src/backend/routes/notificationRoutes.ts';
 import { adminRoutes } from './src/backend/routes/adminRoutes.ts';
 import { exportRoutes } from './src/backend/routes/exportRoutes.ts';
 import { uploadRoutes } from './src/backend/routes/uploadRoutes.ts';
+import { developerRoutes } from './src/backend/routes/developerRoutes.ts';
+import { authorityApplicationRoutes } from './src/backend/routes/authorityApplicationRoutes.ts';
 
 async function startServer() {
   const app = express();
@@ -26,6 +28,12 @@ async function startServer() {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
   app.use('/uploads', express.static(uploadsDir));
+  app.use('/uploads', (_req, res) => {
+    res.status(404).json({ error: 'Uploaded file not found.' });
+  });
+  app.use('/private_uploads', (_req, res) => {
+    res.status(403).json({ error: 'Private storage is not publicly accessible.' });
+  });
 
   // Health Check
   app.get('/api/health', (_req, res) => {
@@ -48,7 +56,14 @@ async function startServer() {
   app.use('/api/analytics', analyticsRoutes);
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/admin', adminRoutes);
+  app.use('/api/authority-applications', authorityApplicationRoutes);
+  app.use('/api/developer', developerRoutes);
   app.use('/api/export', exportRoutes);
+
+  // Ensure unmatched /api/* routes return JSON 404 rather than HTML fallback
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found.' });
+  });
 
   // Centralized error handler for /api/*
   app.use('/api', errorHandler);

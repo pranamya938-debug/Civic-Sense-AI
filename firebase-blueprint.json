@@ -7,14 +7,67 @@
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "role": { "type": "string", "enum": ["citizen", "authority", "admin"] },
+        "role": { "type": "string", "enum": ["citizen", "authority", "admin", "system"] },
+        "accountStatus": { "type": "string", "enum": ["active", "pending_verification", "approved", "rejected", "suspended"] },
         "departmentId": { "type": "string", "maxLength": 64 },
         "wardId": { "type": "string", "maxLength": 64 },
+        "designation": { "type": "string", "maxLength": 120 },
+        "municipality": { "type": "string", "maxLength": 160 },
+        "employeeId": { "type": "string", "maxLength": 64 },
+        "approvedBy": { "type": "string", "maxLength": 128 },
+        "approvedAt": { "type": "string", "format": "date-time" },
         "active": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "displayName", "role", "active", "createdAt", "updatedAt"]
+    },
+    "AuthorityApplication": {
+      "title": "AuthorityApplication",
+      "description": "Municipal authority access verification application requiring administrator approval.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "officialEmail": { "type": "string", "format": "email", "maxLength": 180 },
+        "contactNumber": { "type": "string", "minLength": 6, "maxLength": 32 },
+        "employeeId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "designation": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "municipality": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "departmentId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "departmentName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "wardId": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "wardName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "verificationDocUrl": { "type": "string", "maxLength": 500 },
+        "verificationDocName": { "type": "string", "maxLength": 160 },
+        "emailVerified": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["pending_verification", "approved", "rejected", "suspended"] },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "reviewedBy": { "type": "string", "maxLength": 128 },
+        "reviewedByName": { "type": "string", "maxLength": 120 },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "rejectionReason": { "type": "string", "maxLength": 500 }
+      },
+      "required": [
+        "id",
+        "uid",
+        "fullName",
+        "officialEmail",
+        "contactNumber",
+        "employeeId",
+        "designation",
+        "municipality",
+        "departmentId",
+        "departmentName",
+        "wardId",
+        "wardName",
+        "emailVerified",
+        "status",
+        "submittedAt",
+        "updatedAt"
+      ]
     },
     "UserPrivateInfo": {
       "title": "UserPrivateInfo",
@@ -112,6 +165,15 @@
         "aiSource": { "type": "string", "maxLength": 80 },
         "aiLabel": { "type": "string", "maxLength": 120 },
         "aiExplanation": { "type": "string", "maxLength": 500 },
+        "aiDetectedCategory": { "type": "string", "maxLength": 120 },
+        "aiDetectedProblem": { "type": "string", "maxLength": 160 },
+        "aiImageDescription": { "type": "string", "maxLength": 500 },
+        "aiImageSeverity": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"] },
+        "aiSuggestedDepartment": { "type": "string", "maxLength": 120 },
+        "aiAnalyzedAt": { "type": "string", "maxLength": 64 },
+        "aiImageQuality": { "type": "string", "enum": ["Good", "Poor", "Unclear"] },
+        "aiVisibleEvidence": { "type": "array" },
+        "citizenConfirmedCategory": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "resolvedAt": { "type": "string", "format": "date-time" }
@@ -150,6 +212,7 @@
         "address": { "type": "string", "maxLength": 280 },
         "wardId": { "type": "string", "maxLength": 64 },
         "assignedDepartmentId": { "type": "string", "maxLength": 64 },
+        "assignedAuthorityId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -215,7 +278,7 @@
         "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
         "actorName": { "type": "string", "maxLength": 120 },
-        "actorRole": { "type": "string", "enum": ["admin", "authority"] },
+        "actorRole": { "type": "string", "enum": ["admin", "authority", "system", "citizen"] },
         "action": { "type": "string", "minLength": 2, "maxLength": 120 },
         "targetType": { "type": "string", "minLength": 2, "maxLength": 64 },
         "targetId": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -237,6 +300,10 @@
     "/admins/{userId}": {
       "schema": { "$ref": "#/entities/AdminRecord" },
       "description": "Administrator registry for RBAC checks."
+    },
+    "/authority_applications/{userId}": {
+      "schema": { "$ref": "#/entities/AuthorityApplication" },
+      "description": "Municipal authority verification requests keyed by Firebase UID."
     },
     "/departments/{departmentId}": {
       "schema": { "$ref": "#/entities/Department" },

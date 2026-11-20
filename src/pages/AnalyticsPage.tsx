@@ -3,7 +3,7 @@ import { Lock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
   subscribeDepartments,
-  subscribeGisMarkers,
+  subscribeScopedGisMarkers,
   subscribeWards,
 } from '../services/firestoreService';
 import {
@@ -25,14 +25,23 @@ export const AnalyticsPage: React.FC<{ onOpenAuth?: () => void }> = ({ onOpenAut
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
 
+  const isAuthorized = Boolean(
+    user &&
+      user.active &&
+      (user.role === 'admin' ||
+        (user.role === 'authority' &&
+          user.accountStatus === 'approved' &&
+          user.emailVerified !== false))
+  );
+
   useEffect(() => {
-    if (authLoading || !user?.uid) {
+    if (authLoading || !user?.uid || !isAuthorized) {
       setMarkers([]);
       setDepartments(MUNICIPAL_DEPARTMENTS);
       setWards(MUNICIPAL_WARDS);
       return;
     }
-    const unsubMarkers = subscribeGisMarkers((list) =>
+    const unsubMarkers = subscribeScopedGisMarkers(user, (list) =>
       setMarkers(
         list.map((m) => ({
           id: m.id,
@@ -53,7 +62,7 @@ export const AnalyticsPage: React.FC<{ onOpenAuth?: () => void }> = ({ onOpenAut
       unsubDepts();
       unsubWards();
     };
-  }, [authLoading, user?.uid]);
+  }, [authLoading, user, isAuthorized]);
 
   if (authLoading) {
     return (
@@ -74,7 +83,7 @@ export const AnalyticsPage: React.FC<{ onOpenAuth?: () => void }> = ({ onOpenAut
             Sign In Required for City Analytics
           </h1>
           <p className="text-sm text-neutral-600 leading-relaxed">
-            Cloud Firestore security rules protect live grievance analytics, department performance, and ward distributions from unauthenticated access. Sign in with Firebase Authentication to inspect live analytics.
+            Cloud Firestore security rules protect live grievance analytics, department performance, and ward distributions from unauthenticated access. Sign in with Firebase Authentication to continue.
           </p>
           {onOpenAuth && (
             <button
@@ -82,9 +91,25 @@ export const AnalyticsPage: React.FC<{ onOpenAuth?: () => void }> = ({ onOpenAut
               onClick={onOpenAuth}
               className="px-5 py-2.5 text-sm font-medium bg-[#0B3B2E] text-white rounded-lg hover:bg-[#114B3B] transition-colors cursor-pointer"
             >
-              Sign In or Register
+              Sign In
             </button>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthorized) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-14">
+        <div className="bg-white border border-red-200 rounded-xl p-8 text-center space-y-3">
+          <div className="w-12 h-12 rounded-xl bg-red-50 border border-red-200 flex items-center justify-center text-red-700 mx-auto">
+            <Lock className="w-5 h-5" />
+          </div>
+          <h1 className="text-2xl font-display font-bold text-[#0B3B2E]">Access Denied</h1>
+          <p className="text-sm text-neutral-600 leading-relaxed">
+            Operational analytics and department turnaround dashboards are restricted to authorized Municipal Authority and Administrator accounts.
+          </p>
         </div>
       </div>
     );

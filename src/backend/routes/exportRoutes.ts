@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type * as ArchiverTypes from 'archiver';
 import fs from 'fs';
 import path from 'path';
+import { requireAuth, requireDeveloperAccess } from '../middleware/authMiddleware.ts';
 
 export const exportRoutes = Router();
 
@@ -29,6 +30,7 @@ export async function buildProjectZipStream(outputStream: NodeJS.WritableStream)
       '.git',
       'data',
       'uploads',
+      'private_uploads',
       '.env',
       '.env.local',
       'CivicSense_AI_Complete_Project.zip',
@@ -53,7 +55,7 @@ export async function buildProjectZipStream(outputStream: NodeJS.WritableStream)
   });
 }
 
-exportRoutes.get('/zip', async (_req, res) => {
+exportRoutes.get('/zip', requireAuth, requireDeveloperAccess, async (_req, res) => {
   try {
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', 'attachment; filename="CivicSense_AI_Complete_Project.zip"');

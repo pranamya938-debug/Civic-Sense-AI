@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Layers, Lock, MapPin } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { subscribeGisMarkers, subscribeWards } from '../services/firestoreService';
+import { subscribeScopedGisMarkers, subscribeWards } from '../services/firestoreService';
 import { MUNICIPAL_WARDS } from '../shared/catalog';
 import { CIVIC_CATEGORIES, Ward } from '../shared/types';
 import { GisMap, MapComplaintPoint } from '../components/GisMap';
@@ -19,19 +19,28 @@ export const GisExplorerPage: React.FC<{ onOpenAuth?: () => void }> = ({ onOpenA
   const [showWardOverlay, setShowWardOverlay] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  const isAuthorized = Boolean(
+    user &&
+      user.active &&
+      (user.role === 'admin' ||
+        (user.role === 'authority' &&
+          user.accountStatus === 'approved' &&
+          user.emailVerified !== false))
+  );
+
   useEffect(() => {
-    if (authLoading || !user?.uid) {
+    if (authLoading || !user?.uid || !isAuthorized) {
       setAllMarkers([]);
       setWards(MUNICIPAL_WARDS);
       return;
     }
-    const unsubMarkers = subscribeGisMarkers(setAllMarkers);
+    const unsubMarkers = subscribeScopedGisMarkers(user, setAllMarkers);
     const unsubWards = subscribeWards(setWards);
     return () => {
       unsubMarkers();
       unsubWards();
     };
-  }, [authLoading, user?.uid]);
+  }, [authLoading, user, isAuthorized]);
 
   if (authLoading) {
     return (
@@ -52,7 +61,7 @@ export const GisExplorerPage: React.FC<{ onOpenAuth?: () => void }> = ({ onOpenA
             Sign In Required for Live GIS Map
           </h1>
           <p className="text-sm text-neutral-600 leading-relaxed">
-            Cloud Firestore security rules protect municipal GIS grievance coordinates and ward records from anonymous public access. Sign in with Firebase Authentication to explore live spatial markers.
+            Cloud Firestore security rules protect municipal GIS grievance coordinates and ward records from anonymous public access. Sign in with Firebase Authentication to continue.
           </p>
           {onOpenAuth && (
             <button
@@ -60,9 +69,25 @@ export const GisExplorerPage: React.FC<{ onOpenAuth?: () => void }> = ({ onOpenA
               onClick={onOpenAuth}
               className="px-5 py-2.5 text-sm font-medium bg-[#0B3B2E] text-white rounded-lg hover:bg-[#114B3B] transition-colors cursor-pointer"
             >
-              Sign In or Register
+              Sign In
             </button>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthorized) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-14">
+        <div className="bg-white border border-red-200 rounded-xl p-8 text-center space-y-3">
+          <div className="w-12 h-12 rounded-xl bg-red-50 border border-red-200 flex items-center justify-center text-red-700 mx-auto">
+            <Lock className="w-5 h-5" />
+          </div>
+          <h1 className="text-2xl font-display font-bold text-[#0B3B2E]">Access Denied</h1>
+          <p className="text-sm text-neutral-600 leading-relaxed">
+            Citywide and departmental GIS spatial maps are restricted to authorized Municipal Authority and Administrator accounts.
+          </p>
         </div>
       </div>
     );

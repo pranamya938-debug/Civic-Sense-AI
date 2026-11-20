@@ -1,5 +1,10 @@
 import { Router } from 'express';
-import { AuthenticatedRequest, requireAuth } from '../middleware/authMiddleware.ts';
+import {
+  AuthenticatedRequest,
+  loadRoleScopedCollectionDocs,
+  requireAuth,
+  requireRole,
+} from '../middleware/authMiddleware.ts';
 import { firestoreListCollection } from '../services/firestoreRestService.ts';
 import {
   AnalyticsSourceItem,
@@ -7,7 +12,7 @@ import {
   MUNICIPAL_WARDS,
   computeAnalyticsOverview,
 } from '../../shared/catalog.ts';
-import { COMPLAINT_STATUSES, Department, Ward } from '../../shared/types.ts';
+import { Department, UserProfile, Ward } from '../../shared/types.ts';
 
 export const analyticsRoutes = Router();
 
@@ -37,13 +42,9 @@ function filterItems(
   return out;
 }
 
-async function loadAnalyticsSources(idToken: string) {
+async function loadAnalyticsSources(user: UserProfile, idToken: string) {
   const [markers, fsDepts, fsWards] = await Promise.all([
-    firestoreListCollection<AnalyticsSourceItem>('gis_markers', idToken, 500, {
-      field: 'status',
-      op: 'IN',
-      value: [...COMPLAINT_STATUSES],
-    }),
+    loadRoleScopedCollectionDocs<AnalyticsSourceItem>('gis_markers', user, idToken, 500),
     firestoreListCollection<Department>('departments', idToken, 100, {
       field: 'active',
       op: 'EQUAL',
@@ -60,34 +61,58 @@ async function loadAnalyticsSources(idToken: string) {
   return { markers, departments, wards };
 }
 
-analyticsRoutes.get('/overview', requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const { markers, departments, wards } = await loadAnalyticsSources(req.firebaseIdToken!);
-    const filtered = filterItems(markers, req.query as Record<string, string>);
-    res.json(computeAnalyticsOverview(filtered, departments, wards));
-  } catch (err) {
-    next(err);
+analyticsRoutes.get(
+  '/overview',
+  requireAuth,
+  requireRole('authority', 'admin'),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const { markers, departments, wards } = await loadAnalyticsSources(
+        req.user!,
+        req.firebaseIdToken!
+      );
+      const filtered = filterItems(markers, req.query as Record<string, string>);
+      res.json(computeAnalyticsOverview(filtered, departments, wards));
+    } catch (err) {
+      next(err);
+    }
   }
-});
+);
 
-analyticsRoutes.get('/categories', requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const { markers, departments, wards } = await loadAnalyticsSources(req.firebaseIdToken!);
-    const filtered = filterItems(markers, req.query as Record<string, string>);
-    const overview = computeAnalyticsOverview(filtered, departments, wards);
-    res.json({ byCategory: overview.byCategory });
-  } catch (err) {
-    next(err);
+analyticsRoutes.get(
+  '/categories',
+  requireAuth,
+  requireRole('authority', 'admin'),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const { markers, departments, wards } = await loadAnalyticsSources(
+        req.user!,
+        req.firebaseIdToken!
+      );
+      const filtered = filterItems(markers, req.query as Record<string, string>);
+      const overview = computeAnalyticsOverview(filtered, departments, wards);
+      res.json({ byCategory: overview.byCategory });
+    } catch (err) {
+      next(err);
+    }
   }
-});
+);
 
-analyticsRoutes.get('/wards', requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const { markers, departments, wards } = await loadAnalyticsSources(req.firebaseIdToken!);
-    const filtered = filterItems(markers, req.query as Record<string, string>);
-    const overview = computeAnalyticsOverview(filtered, departments, wards);
-    res.json({ byWard: overview.byWard });
-  } catch (err) {
-    next(err);
+analyticsRoutes.get(
+  '/wards',
+  requireAuth,
+  requireRole('authority', 'admin'),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const { markers, departments, wards } = await loadAnalyticsSources(
+        req.user!,
+        req.firebaseIdToken!
+      );
+      const filtered = filterItems(markers, req.query as Record<string, string>);
+      const overview = computeAnalyticsOverview(filtered, departments, wards);
+      res.json({ byWard: overview.byWard });
+    } catch (err) {
+      next(err);
+    }
   }
-});
+);

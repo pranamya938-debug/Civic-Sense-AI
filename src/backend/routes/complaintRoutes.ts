@@ -1,5 +1,11 @@
 import { Router } from 'express';
-import { AuthenticatedRequest, requireAuth, requireRole } from '../middleware/authMiddleware.ts';
+import {
+  AuthenticatedRequest,
+  isAuthorityAuthorizedForComplaint,
+  loadRoleScopedCollectionDocs,
+  requireAuth,
+  requireRole,
+} from '../middleware/authMiddleware.ts';
 import {
   firestoreCommitBatch,
   firestoreGetDoc,
@@ -17,6 +23,7 @@ import {
   ComplaintStatus,
   ComplaintUpdate,
   Department,
+  ImageQuality,
   Ward,
 } from '../../shared/types.ts';
 
@@ -43,6 +50,15 @@ interface RawComplaintDoc {
   aiSource?: string;
   aiLabel?: string;
   aiExplanation?: string;
+  aiDetectedCategory?: string;
+  aiDetectedProblem?: string;
+  aiImageDescription?: string;
+  aiImageSeverity?: ComplaintPriority;
+  aiSuggestedDepartment?: string;
+  aiAnalyzedAt?: string;
+  aiImageQuality?: ImageQuality;
+  aiVisibleEvidence?: string[];
+  citizenConfirmedCategory?: boolean;
   createdAt: string;
   updatedAt: string;
   resolvedAt?: string;
@@ -81,6 +97,15 @@ function hydrateComplaint(raw: RawComplaintDoc, departments: Department[]): Comp
       matchedKeywords: [],
       explanation: raw.aiExplanation || '',
     },
+    aiDetectedCategory: raw.aiDetectedCategory,
+    aiDetectedProblem: raw.aiDetectedProblem,
+    aiImageDescription: raw.aiImageDescription,
+    aiImageSeverity: raw.aiImageSeverity,
+    aiSuggestedDepartment: raw.aiSuggestedDepartment,
+    aiAnalyzedAt: raw.aiAnalyzedAt,
+    aiImageQuality: raw.aiImageQuality,
+    aiVisibleEvidence: raw.aiVisibleEvidence,
+    citizenConfirmedCategory: raw.citizenConfirmedCategory,
     potentialDuplicates: [],
     isDemoData: false,
     createdAt: raw.createdAt,
@@ -104,191 +129,224 @@ function inferNearestWard(lat: number, lng: number, wards: Ward[]): string {
   return best.id;
 }
 
-complaintRoutes.get('/', requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const token = req.firebaseIdToken!;
-    const { status, category, priority, wardId, search, mineOnly } = req.query as Record<string, string>;
+complaintRoutes.get(
+  '/',
+  requireAuth,
+  requireRole('citizen', 'authority', 'admin'),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const token = req.firebaseIdToken!;
+      const { status, category, priority, wardId, search, mineOnly } = req.query as Record<string, string>;
 
-    const filterByCitizen =
-      req.user!.role === 'citizen' || mineOnly === 'true'
-        ? { field: 'citizenId', value: req.user!.uid }
-        : undefined;
+      const [rawComplaints, fsDepts] = await Promise.all([
+        req.user!.role === 'citizen' || mineOnly === 'true'
+          ? firestoreListCollection<RawComplaintDoc>('complaints', token, 300, {
+              field: 'citizenId',
+              op: 'EQUAL',
+              value: req.user!.uid,
+            })
+          : loadRoleScopedCollectionDocs<RawComplaintDoc>('complaints', req.user!, token, 300),
+        firestoreListCollection<Department>('departments', token, 100, {
+          field: 'active',
+          op: 'EQUAL',
+          value: true,
+        }),
+      ]);
+      const departments = fsDepts.length > 0 ? fsDepts : MUNICIPAL_DEPARTMENTS;
 
-    const [rawComplaints, fsDepts] = await Promise.all([
-      firestoreListCollection<RawComplaintDoc>('complaints', token, 300, filterByCitizen),
-      firestoreListCollection<Department>('departments', token, 100, {
-        field: 'active',
-        op: 'EQUAL',
-        value: true,
-      }),
-    ]);
-    const departments = fsDepts.length > 0 ? fsDepts : MUNICIPAL_DEPARTMENTS;
+      let list = rawComplaints.map((r) => hydrateComplaint(r, departments));
 
-    let list = rawComplaints.map((r) => hydrateComplaint(r, departments));
+      if (req.user!.role === 'citizen' || mineOnly === 'true') {
+        list = list.filter((c) => c.citizenId === req.user!.uid);
+      }
+      if (status && status !== 'All') list = list.filter((c) => c.status === status);
+      if (category && category !== 'All') list = list.filter((c) => c.category === category);
+      if (priority && priority !== 'All') list = list.filter((c) => c.priority === priority);
+      if (wardId && wardId !== 'All') list = list.filter((c) => c.wardId === wardId);
+      if (search && search.trim()) {
+        const q = search.trim().toLowerCase();
+        list = list.filter(
+          (c) =>
+            c.id.toLowerCase().includes(q) ||
+            c.title.toLowerCase().includes(q) ||
+            c.address.toLowerCase().includes(q) ||
+            c.description.toLowerCase().includes(q)
+        );
+      }
 
-    if (req.user!.role === 'citizen' || mineOnly === 'true') {
-      list = list.filter((c) => c.citizenId === req.user!.uid);
+      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      res.json({ complaints: list });
+    } catch (err) {
+      next(err);
     }
-    if (status && status !== 'All') list = list.filter((c) => c.status === status);
-    if (category && category !== 'All') list = list.filter((c) => c.category === category);
-    if (priority && priority !== 'All') list = list.filter((c) => c.priority === priority);
-    if (wardId && wardId !== 'All') list = list.filter((c) => c.wardId === wardId);
-    if (search && search.trim()) {
-      const q = search.trim().toLowerCase();
-      list = list.filter(
-        (c) =>
-          c.id.toLowerCase().includes(q) ||
-          c.title.toLowerCase().includes(q) ||
-          c.address.toLowerCase().includes(q) ||
-          c.description.toLowerCase().includes(q)
+  }
+);
+
+complaintRoutes.get(
+  '/:id',
+  requireAuth,
+  requireRole('citizen', 'authority', 'admin'),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const token = req.firebaseIdToken!;
+      const [raw, fsDepts] = await Promise.all([
+        firestoreGetDoc<RawComplaintDoc>(`complaints/${req.params.id}`, token),
+        firestoreListCollection<Department>('departments', token, 100, {
+          field: 'active',
+          op: 'EQUAL',
+          value: true,
+        }),
+      ]);
+
+      if (!raw) {
+        res.status(404).json({ error: 'Complaint not found.' });
+        return;
+      }
+      if (req.user!.role === 'citizen' && raw.citizenId !== req.user!.uid) {
+        res.status(403).json({ error: 'Access denied. Citizens can only access their own complaints.' });
+        return;
+      }
+      if (req.user!.role === 'authority' && !isAuthorityAuthorizedForComplaint(req.user!, raw)) {
+        res.status(403).json({ error: 'Access denied. Complaint is outside your authorized department or ward.' });
+        return;
+      }
+      const updates = await firestoreListCollection<ComplaintUpdate>(
+        `complaints/${req.params.id}/updates`,
+        token,
+        100
       );
+      const departments = fsDepts.length > 0 ? fsDepts : MUNICIPAL_DEPARTMENTS;
+      updates.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      res.json({ complaint: hydrateComplaint(raw, departments), updates });
+    } catch (err) {
+      next(err);
     }
-
-    list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    res.json({ complaints: list });
-  } catch (err) {
-    next(err);
   }
-});
+);
 
-complaintRoutes.get('/:id', requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const token = req.firebaseIdToken!;
-    const [raw, updates, fsDepts] = await Promise.all([
-      firestoreGetDoc<RawComplaintDoc>(`complaints/${req.params.id}`, token),
-      firestoreListCollection<ComplaintUpdate>(`complaints/${req.params.id}/updates`, token, 100),
-      firestoreListCollection<Department>('departments', token, 100, {
-        field: 'active',
-        op: 'EQUAL',
-        value: true,
-      }),
-    ]);
-
-    if (!raw) {
-      res.status(404).json({ error: 'Complaint not found.' });
-      return;
+complaintRoutes.get(
+  '/:id/updates',
+  requireAuth,
+  requireRole('citizen', 'authority', 'admin'),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const token = req.firebaseIdToken!;
+      const raw = await firestoreGetDoc<RawComplaintDoc>(`complaints/${req.params.id}`, token);
+      if (!raw) {
+        res.status(404).json({ error: 'Complaint not found.' });
+        return;
+      }
+      if (req.user!.role === 'citizen' && raw.citizenId !== req.user!.uid) {
+        res.status(403).json({ error: 'Access denied. Citizens can only access their own complaints.' });
+        return;
+      }
+      if (req.user!.role === 'authority' && !isAuthorityAuthorizedForComplaint(req.user!, raw)) {
+        res.status(403).json({ error: 'Access denied. Complaint is outside your authorized department or ward.' });
+        return;
+      }
+      const updates = await firestoreListCollection<ComplaintUpdate>(
+        `complaints/${req.params.id}/updates`,
+        token,
+        100
+      );
+      updates.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      res.json({ updates });
+    } catch (err) {
+      next(err);
     }
-    if (req.user!.role === 'citizen' && raw.citizenId !== req.user!.uid) {
-      res.status(403).json({ error: 'Access denied.' });
-      return;
-    }
-    const departments = fsDepts.length > 0 ? fsDepts : MUNICIPAL_DEPARTMENTS;
-    updates.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-    res.json({ complaint: hydrateComplaint(raw, departments), updates });
-  } catch (err) {
-    next(err);
   }
-});
+);
 
-complaintRoutes.get('/:id/updates', requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const token = req.firebaseIdToken!;
-    const raw = await firestoreGetDoc<RawComplaintDoc>(`complaints/${req.params.id}`, token);
-    if (!raw) {
-      res.status(404).json({ error: 'Complaint not found.' });
-      return;
-    }
-    if (req.user!.role === 'citizen' && raw.citizenId !== req.user!.uid) {
-      res.status(403).json({ error: 'Access denied.' });
-      return;
-    }
-    const updates = await firestoreListCollection<ComplaintUpdate>(
-      `complaints/${req.params.id}/updates`,
-      token,
-      100
-    );
-    updates.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-    res.json({ updates });
-  } catch (err) {
-    next(err);
-  }
-});
+complaintRoutes.post(
+  '/',
+  requireAuth,
+  requireRole('citizen', 'admin'),
+  async (req: AuthenticatedRequest, res, next) => {
+    try {
+      const token = req.firebaseIdToken!;
+      const {
+        title,
+        description,
+        category,
+        photoUrl,
+        latitude,
+        longitude,
+        address,
+        wardId,
+        useAiSuggestedCategory,
+      } = req.body as {
+        title?: string;
+        description?: string;
+        category?: string;
+        photoUrl?: string;
+        latitude?: number;
+        longitude?: number;
+        address?: string;
+        wardId?: string;
+        useAiSuggestedCategory?: boolean;
+      };
 
-complaintRoutes.post('/', requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const token = req.firebaseIdToken!;
-    const {
-      title,
-      description,
-      category,
-      photoUrl,
-      latitude,
-      longitude,
-      address,
-      wardId,
-      useAiSuggestedCategory,
-    } = req.body as {
-      title?: string;
-      description?: string;
-      category?: string;
-      photoUrl?: string;
-      latitude?: number;
-      longitude?: number;
-      address?: string;
-      wardId?: string;
-      useAiSuggestedCategory?: boolean;
-    };
+      if (!title || title.trim().length < 4) {
+        res.status(400).json({ error: 'Complaint title must be at least 4 characters.' });
+        return;
+      }
+      if (!description || description.trim().length < 10) {
+        res.status(400).json({ error: 'Detailed description must be at least 10 characters.' });
+        return;
+      }
+      if (!address || address.trim().length < 3) {
+        res.status(400).json({ error: 'Address or locality is required.' });
+        return;
+      }
 
-    if (!title || title.trim().length < 4) {
-      res.status(400).json({ error: 'Complaint title must be at least 4 characters.' });
-      return;
-    }
-    if (!description || description.trim().length < 10) {
-      res.status(400).json({ error: 'Detailed description must be at least 10 characters.' });
-      return;
-    }
-    if (!address || address.trim().length < 3) {
-      res.status(400).json({ error: 'Address or locality is required.' });
-      return;
-    }
+      const lat = typeof latitude === 'number' && !Number.isNaN(latitude) ? latitude : 12.9784;
+      const lng = typeof longitude === 'number' && !Number.isNaN(longitude) ? longitude : 77.6408;
 
-    const lat = typeof latitude === 'number' && !Number.isNaN(latitude) ? latitude : 12.9784;
-    const lng = typeof longitude === 'number' && !Number.isNaN(longitude) ? longitude : 77.6408;
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        res.status(400).json({ error: 'Invalid GPS coordinates.' });
+        return;
+      }
 
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      res.status(400).json({ error: 'Invalid GPS coordinates.' });
-      return;
-    }
+      if (photoUrl && photoUrl.length > 500) {
+        res.status(400).json({ error: 'Upload photograph via /api/uploads first so photoUrl is <= 500 chars.' });
+        return;
+      }
 
-    if (photoUrl && photoUrl.length > 500) {
-      res.status(400).json({ error: 'Upload photograph via /api/uploads first so photoUrl is <= 500 chars.' });
-      return;
-    }
+      const [fsWards, fsDepts, existingMarkers] = await Promise.all([
+        firestoreListCollection<Ward>('wards', token, 100, {
+          field: 'active',
+          op: 'EQUAL',
+          value: true,
+        }),
+        firestoreListCollection<Department>('departments', token, 100, {
+          field: 'active',
+          op: 'EQUAL',
+          value: true,
+        }),
+        loadRoleScopedCollectionDocs<RawComplaintDoc>(
+          req.user!.role === 'citizen' ? 'complaints' : 'gis_markers',
+          req.user!,
+          token,
+          300
+        ),
+      ]);
+      const wards = fsWards.length > 0 ? fsWards : MUNICIPAL_WARDS;
+      const departments = fsDepts.length > 0 ? fsDepts : MUNICIPAL_DEPARTMENTS;
 
-    const [fsWards, fsDepts, existingMarkers] = await Promise.all([
-      firestoreListCollection<Ward>('wards', token, 100, {
-        field: 'active',
-        op: 'EQUAL',
-        value: true,
-      }),
-      firestoreListCollection<Department>('departments', token, 100, {
-        field: 'active',
-        op: 'EQUAL',
-        value: true,
-      }),
-      firestoreListCollection<RawComplaintDoc>('gis_markers', token, 300, {
-        field: 'status',
-        op: 'IN',
-        value: [...COMPLAINT_STATUSES],
-      }),
-    ]);
-    const wards = fsWards.length > 0 ? fsWards : MUNICIPAL_WARDS;
-    const departments = fsDepts.length > 0 ? fsDepts : MUNICIPAL_DEPARTMENTS;
+      const aiPrediction = await mlService.analyzeComplaint({
+        title: title.trim(),
+        description: description.trim(),
+        category,
+        latitude: lat,
+        longitude: lng,
+      });
 
-    const aiPrediction = await mlService.analyzeComplaint({
-      title: title.trim(),
-      description: description.trim(),
-      category,
-      latitude: lat,
-      longitude: lng,
-    });
+      const resolvedCategory: CivicCategory =
+        useAiSuggestedCategory || !category || !CIVIC_CATEGORIES.includes(category as CivicCategory)
+          ? aiPrediction.predictedCategory
+          : (category as CivicCategory);
 
-    const resolvedCategory: CivicCategory =
-      useAiSuggestedCategory || !category || !CIVIC_CATEGORIES.includes(category as CivicCategory)
-        ? aiPrediction.predictedCategory
-        : (category as CivicCategory);
-
-    const existingHydrated = existingMarkers.map((m) => hydrateComplaint(m, departments));
+      const existingHydrated = existingMarkers.map((m) => hydrateComplaint(m, departments));
     const dupResult = await mlService.checkDuplicates(
       {
         title: title.trim(),
@@ -420,10 +478,11 @@ complaintRoutes.post('/', requireAuth, async (req: AuthenticatedRequest, res, ne
     hydrated.potentialDuplicates = dupResult.candidates;
 
     res.status(201).json({ complaint: hydrated });
-  } catch (err) {
-    next(err);
+    } catch (err) {
+      next(err);
+    }
   }
-});
+);
 
 complaintRoutes.patch(
   '/:id/status',
@@ -442,6 +501,12 @@ complaintRoutes.patch(
       const existing = await firestoreGetDoc<RawComplaintDoc>(`complaints/${req.params.id}`, token);
       if (!existing) {
         res.status(404).json({ error: 'Complaint not found.' });
+        return;
+      }
+      if (req.user!.role === 'authority' && !isAuthorityAuthorizedForComplaint(req.user!, existing)) {
+        res.status(403).json({
+          error: 'Access denied. This complaint is outside your authorized department or ward.',
+        });
         return;
       }
 
@@ -571,6 +636,12 @@ complaintRoutes.patch(
         res.status(404).json({ error: 'Complaint not found.' });
         return;
       }
+      if (req.user!.role === 'authority' && !isAuthorityAuthorizedForComplaint(req.user!, existing)) {
+        res.status(403).json({
+          error: 'Access denied. This complaint is outside your authorized department or ward.',
+        });
+        return;
+      }
 
       const departments = fsDepts.length > 0 ? fsDepts : MUNICIPAL_DEPARTMENTS;
       const dept = departments.find((d) => d.id === departmentId);
@@ -627,9 +698,10 @@ complaintRoutes.patch(
             docPath: `gis_markers/${existing.id}`,
             data: {
               assignedDepartmentId: dept.id,
+              assignedAuthorityId,
               status: nextStatus,
             },
-            updateMask: ['assignedDepartmentId', 'status', 'updatedAt'],
+            updateMask: ['assignedDepartmentId', 'assignedAuthorityId', 'status', 'updatedAt'],
             serverTimestamps: ['updatedAt'],
           },
           {
